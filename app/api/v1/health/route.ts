@@ -19,8 +19,13 @@ export async function GET() {
   const started = Date.now();
 
   const [database, inference] = await Promise.all([
-    db
-      .execute("select 1")
+    // Deliberately wrapped: `db` is a Proxy whose get trap calls connect(),
+    // which THROWS SYNCHRONOUSLY when DATABASE_URL is unset — before any
+    // promise exists, so a bare `.catch()` never attaches and the throw escapes
+    // this handler as a blank 500. Reporting a missing DATABASE_URL is exactly
+    // this endpoint's job, so it must not be the one thing that kills it.
+    Promise.resolve()
+      .then(() => db.execute("select 1"))
       .then(() => ({ ok: true as const }))
       .catch((error: Error) => ({ ok: false as const, error: error.message })),
     inferenceHealth()
