@@ -241,14 +241,6 @@ function Results({
         <span className="font-mono">packs {result.packsVersion}</span>
       </div>
 
-      {result.uncalibrated.length > 0 && (
-        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-          <strong>Uncalibrated:</strong> {result.uncalibrated.join(", ")}. These
-          thresholds are educated guesses, not measurements — they become real once
-          <code className="mx-1">calibrate.py</code> runs against labelled images.
-        </div>
-      )}
-
       {/* Evidence: show WHERE the winning crop was. A verdict nobody can see the
           basis for is a verdict nobody will trust. */}
       {shown && (

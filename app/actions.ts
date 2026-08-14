@@ -24,7 +24,6 @@ export type PlaygroundResult =
       latencyMs: number;
       model: string;
       packsVersion: string;
-      uncalibrated: string[];
     }
   | { ok: false; message: string; retryable?: boolean };
 
@@ -83,7 +82,6 @@ export async function analyzeAction(formData: FormData): Promise<PlaygroundResul
       latencyMs: outcome.latencyMs,
       model: outcome.model,
       packsVersion: outcome.packsVersion,
-      uncalibrated: outcome.uncalibrated,
     };
   } catch (error) {
     if (error instanceof InferenceWarmingError) {
