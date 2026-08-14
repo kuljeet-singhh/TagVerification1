@@ -6,7 +6,7 @@ colorTo: purple
 sdk: gradio
 app_file: app.py
 pinned: false
-short_description: Verify a creative actually contains the content it is tagged with
+short_description: Verify a creative contains the content it is tagged with
 ---
 
 # DOOH Tag Verification — inference service
