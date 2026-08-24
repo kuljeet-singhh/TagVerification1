@@ -16,7 +16,7 @@ import pytest
 from PIL import Image
 from starlette.datastructures import FormData, UploadFile
 
-from dooh.analyze import intake
+from tagverify.analyze import intake
 
 
 def png(width: int = 40, height: int = 40, colour: str = "red") -> bytes:

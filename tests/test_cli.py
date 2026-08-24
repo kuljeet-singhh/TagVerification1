@@ -12,8 +12,8 @@ import inspect
 
 from sqlalchemy.dialects import postgresql
 
-from dooh.cli import apply_calibration
-from dooh.db.models import EvalImage
+from tagverify.cli import apply_calibration
+from tagverify.db.models import EvalImage
 
 
 def _eval_image_insert_sql() -> str:

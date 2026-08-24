@@ -25,8 +25,8 @@ from pathlib import Path
 
 import pytest
 
-import dooh.tags.decide as decide_module
-from dooh.tags.decide import RULE_VERSION, Thresholds, decision_version
+import tagverify.tags.decide as decide_module
+from tagverify.tags.decide import RULE_VERSION, Thresholds, decision_version
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -131,7 +131,7 @@ def test_the_cli_and_the_detector_agree_on_packs_version() -> None:
 
     Checked against the source rather than by importing detector.py, which pulls in torch.
     """
-    from dooh.cli import packs_version
+    from tagverify.cli import packs_version
 
     source = (ROOT / "inference" / "detector.py").read_text()
     assert "hashlib.sha256(raw_packs" not in source

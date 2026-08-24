@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from dooh import templating
+from tagverify import templating
 
 
 @pytest.fixture
@@ -102,7 +102,7 @@ def test_a_missing_asset_degrades_instead_of_raising(static_dir: Path) -> None:
 
 def _card(decided_by: str, band: str, present: bool | None, sigmoid: float) -> str:
     """Render partials/verdict_card.html for one verdict."""
-    from dooh.tags.decide import Evidence, Thresholds, Verdict
+    from tagverify.tags.decide import Evidence, Thresholds, Verdict
 
     verdict = Verdict(
         tag="gambling",

@@ -43,7 +43,7 @@ def encode(
 
     `gop` sets the keyframe interval, which is what the sampler reads as a scene cut — pass a
     large one to build a clip whose encoder emitted a single keyframe, and the uniform-sampling
-    fallback in `dooh/analyze/video.py` takes over.
+    fallback in `tagverify/analyze/video.py` takes over.
 
     Scenes may be `PIL` images or colour names (`"red"`), so a test that only cares about
     "two distinguishable scenes" does not have to source photographs.

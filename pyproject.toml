@@ -37,7 +37,7 @@ dev = [
 ]
 
 [project.scripts]
-dooh = "dooh.cli:app"
+dooh = "tagverify.cli:app"
 
 [build-system]
 requires = ["setuptools>=75"]
@@ -48,17 +48,17 @@ build-backend = "setuptools.build_meta"
 # from inference/banding.py. That directory is ALSO git-subtree-pushed to the
 # Hugging Face Space, where it runs flat (no package); see inference/banding.py.
 #
-# Discovered, not hand-listed. Because `dooh` sits at the repo root it is importable from the
+# Discovered, not hand-listed. Because `tagverify` sits at the repo root it is importable from the
 # working tree whether or not it is declared correctly, so a hand-maintained list can omit a
 # subpackage and ship a broken wheel with a fully green test suite.
 #
 # namespaces = false is load-bearing, not cosmetic: the default is true, and inference/eval/
 # and inference/.testimages/ would otherwise be picked up as PEP-420 namespace packages.
-include = ["dooh*", "inference*"]
+include = ["tagverify*", "inference*"]
 namespaces = false
 
 [tool.setuptools.package-data]
-dooh = ["templates/**/*.html", "static/**/*"]
+tagverify = ["templates/**/*.html", "static/**/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -83,7 +83,7 @@ ignore = ["B008"]  # FastAPI's Depends()/File() defaults are the documented idio
 # merges them into the PIL/torch block, erasing the visual separation between "someone else's
 # code" and "this directory's own modules, imported the way the Space sees them". The shim
 # that makes both forms work is documented in inference/detector.py:56-65.
-known-first-party = ["banding", "detector", "versioning", "dooh", "inference"]
+known-first-party = ["banding", "detector", "versioning", "tagverify", "inference"]
 
 [tool.mypy]
 python_version = "3.12"

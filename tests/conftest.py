@@ -16,11 +16,11 @@ from pathlib import Path
 import httpx
 import pytest
 
-from dooh import config as _config
+from tagverify import config as _config
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Must be set before dooh.config is first imported.
+# Must be set before tagverify.config is first imported.
 os.environ.setdefault("ADMIN_PASSWORD", "test-admin-password")
 
 
@@ -33,7 +33,7 @@ def admin_password() -> str:
 
 @pytest.fixture
 async def client() -> AsyncIterator[httpx.AsyncClient]:
-    from dooh.main import app
+    from tagverify.main import app
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test", timeout=60
@@ -70,9 +70,9 @@ async def api_key() -> AsyncIterator[str]:
     """
     from sqlalchemy import delete
 
-    from dooh.auth.keys import create_api_key
-    from dooh.db.models import ApiKey
-    from dooh.db.session import session_scope
+    from tagverify.auth.keys import create_api_key
+    from tagverify.db.models import ApiKey
+    from tagverify.db.session import session_scope
 
     async with session_scope() as session:
         issued = await create_api_key(session, "pytest", rate_limit_per_min=10_000)

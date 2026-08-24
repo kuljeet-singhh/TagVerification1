@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from dooh.analyze import intake, video
+from tagverify.analyze import intake, video
 from tests.videos import encode
 
 ROOT_IMAGE = Path("inference/eval/alcohol/pos/Beer.jpg")
@@ -253,8 +253,8 @@ async def test_a_failed_frame_fails_the_whole_request(monkeypatch: pytest.Monkey
     so, is "we didn't check" presented as "we checked and it's clean". The caller cannot tell
     the difference, which is precisely why this has to raise.
     """
-    from dooh.analyze import run
-    from dooh.inference.client import InferenceError, RawAnalysis
+    from tagverify.analyze import run
+    from tagverify.scoring.client import InferenceError, RawAnalysis
 
     built = intake.build(encode(["red", "green", "blue"]), ["alcohol"])
     assert len(built.frames) == 3
@@ -282,8 +282,8 @@ async def test_every_frame_is_annotated_with_where_it_came_from(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The raw rows carry frame provenance, which is what the cache re-aggregates from."""
-    from dooh.analyze import run
-    from dooh.inference.client import RawAnalysis, RawVerdict
+    from tagverify.analyze import run
+    from tagverify.scoring.client import RawAnalysis, RawVerdict
 
     built = intake.build(encode(["red", "green"]), ["alcohol"])
 
@@ -316,8 +316,8 @@ async def test_an_image_keeps_the_raw_shape_it_always_had(
     A still's raw rows gain no keys, so cache entries written before video existed still
     decode, and re-reading one cannot start reporting a phantom frame.
     """
-    from dooh.analyze import run
-    from dooh.inference.client import RawAnalysis, RawVerdict
+    from tagverify.analyze import run
+    from tagverify.scoring.client import RawAnalysis, RawVerdict
 
     built = intake.build(ROOT_IMAGE.read_bytes(), ["alcohol"])
 

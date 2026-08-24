@@ -11,8 +11,8 @@ raw score. Both are silent in production, which is why they are pinned here.
 
 from __future__ import annotations
 
-from dooh.analyze.aggregate import aggregate
-from dooh.tags.decide import Evidence, FrameRef, Verdict
+from tagverify.analyze.aggregate import aggregate
+from tagverify.tags.decide import Evidence, FrameRef, Verdict
 
 
 def verdict(

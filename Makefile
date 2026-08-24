@@ -24,7 +24,7 @@ install:
 # Localhost only. This is the right default: a dev server with --reload should not be
 # listening on the network by accident.
 dev:
-	$(VENV)/bin/uvicorn dooh.main:app --reload --env-file $(ENV_FILE) --port $(PORT)
+	$(VENV)/bin/uvicorn tagverify.main:app --reload --env-file $(ENV_FILE) --port $(PORT)
 
 # Reachable from other machines on the same network.
 #
@@ -48,7 +48,7 @@ serve-lan:
 	@echo ""
 	@echo "  Anyone on this network can now reach the playground and /admin."
 	@echo ""
-	$(VENV)/bin/uvicorn dooh.main:app --reload --host 0.0.0.0 --port $(PORT) --env-file $(ENV_FILE)
+	$(VENV)/bin/uvicorn tagverify.main:app --reload --host 0.0.0.0 --port $(PORT) --env-file $(ENV_FILE)
 
 test:
 	$(PY) -m pytest
@@ -64,17 +64,17 @@ test-fast:
 # installed in this venv — and the 2,200 lines it used to skip are where the least-reviewed
 # code in the repo lives. The exclusions are in pyproject.toml.
 lint:
-	$(VENV)/bin/ruff check dooh/ tests/ inference/
+	$(VENV)/bin/ruff check tagverify/ tests/ inference/
 
 fmt:
-	$(VENV)/bin/ruff check --fix dooh/ tests/ inference/
-	$(VENV)/bin/ruff format dooh/ tests/ inference/
+	$(VENV)/bin/ruff check --fix tagverify/ tests/ inference/
+	$(VENV)/bin/ruff format tagverify/ tests/ inference/
 
 # [tool.mypy] has been configured since the rewrite with nothing to invoke it. Deliberately
 # not part of `check` yet: it is not clean, and wiring it in before it is would just teach
 # everyone to ignore a red `check`.
 typecheck:
-	$(VENV)/bin/mypy dooh/
+	$(VENV)/bin/mypy tagverify/
 
 check: lint test
 

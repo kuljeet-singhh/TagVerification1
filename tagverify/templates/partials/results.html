@@ -1,0 +1,118 @@
+{% import "_icons.html" as ico %}
+{# HTMX swap target for POST /ui/analyze. Rendered into #results. #}
+
+<div class="stack gap-4 fade-in">
+
+  {# --- summary ------------------------------------------------------------
+     Leads with the counts, and specifically with how many verdicts need a
+     human. The old UI made that a 10px badge on one card and never totalled it. #}
+  <div class="card results-summary">
+    {% for band in ['present', 'uncertain', 'absent'] %}
+      {% if counts[band] %}
+        <span class="chip chip-{{ band }}">
+          {{ ico.icon(BANDS[band].icon, 12) }}
+          {{ counts[band] }} {{ BANDS[band].word | lower }}
+        </span>
+      {% endif %}
+    {% endfor %}
+
+    <div class="meta-line push">
+      <span class="tnum">{{ result.latency_ms }} ms</span>
+      {% if result.cached %}<span class="chip">served from cache</span>{% endif %}
+      <span class="mono">{{ result.model }}</span>
+      <span class="mono">packs {{ result.packs_version }}</span>
+    </div>
+  </div>
+
+  {% if result.uncalibrated %}
+    {# `calibrated: false` used to be the third clause of a truncated 12px line,
+       which on a narrow column was literally clipped away. With most tags
+       uncalibrated in practice, that presented guesses as measurements. #}
+    <div class="callout callout-warn">
+      <strong>{{ result.uncalibrated | length }} of {{ result.verdicts | length }}</strong>
+      {{ 'tag has' if result.uncalibrated | length == 1 else 'tags have' }} never been
+      calibrated against labelled images
+      (<span class="mono">{{ result.uncalibrated | join(', ') }}</span>).
+      Those verdicts are educated guesses, not measurements.
+      <a href="/docs#calibration">What this means</a>
+    </div>
+  {% endif %}
+
+  {# --- evidence -----------------------------------------------------------
+     Every tag's winning crop is drawn, faint except the focused one. Showing a
+     single unlabelled rectangle — as the old UI did — hid both the fact that
+     other regions existed and which tag the box belonged to. #}
+  {% if media_kind == 'video' %}
+    {# The frame count is the coverage statement. "6 of 11 scenes" and "all 6 scenes"
+       are different claims, and a bare verdict makes them look identical. #}
+    <div class="callout">
+      Sampled <strong>{{ result.frames_analyzed }}</strong>
+      {{ 'frame' if result.frames_analyzed == 1 else 'frames' }}
+      {%- if result.frames_considered > result.frames_analyzed %}
+        of {{ result.frames_considered }} distinct scenes
+      {%- endif %}
+      {%- if result.duration_s %} across {{ "%.1f" | format(result.duration_s) }}s{% endif %}.
+      Each was scored separately; a tag is present if it appears in any one of them.
+    </div>
+  {% endif %}
+
+  {% if preview_data_url or media_kind == 'video' %}
+    <figure class="stack">
+      {# For video the source is attached client-side from the object URL the browser
+         already holds, and the player seeks itself to the winning frame's timestamp.
+         Nothing is echoed back and nothing is stored — see tagverify/web/playground.py. #}
+      <div class="evidence" id="evidence" data-kind="{{ media_kind }}">
+        {% if media_kind == 'video' %}
+          <video id="evidence-video" playsinline muted preload="metadata"></video>
+        {% else %}
+          <img src="{{ preview_data_url }}" alt="The analysed creative">
+        {% endif %}
+        {% for verdict in result.verdicts %}
+          {% set crop = verdict.evidence.crop %}
+          {# Coloured by its own band, so the overlay also answers "and what was
+             the verdict there?" without a trip back to the list. #}
+          <span class="crop-box" data-tag="{{ verdict.tag }}"
+                data-band="{{ verdict.band }}"
+                {% if verdict.evidence.frame %}
+                  data-timestamp="{{ verdict.evidence.frame.timestamp_s }}"
+                {% endif %}
+                data-focused="{{ 'true' if loop.first else 'false' }}"
+                style="left:{{ (crop[0] * 100) | round(2) }}%;
+                       top:{{ (crop[1] * 100) | round(2) }}%;
+                       width:{{ ((crop[2] - crop[0]) * 100) | round(2) }}%;
+                       height:{{ ((crop[3] - crop[1]) * 100) | round(2) }}%">
+            <span class="crop-label">{{ verdict.tag }} · {{ "%.3f" | format(verdict.score) }}</span>
+          </span>
+        {% endfor %}
+      </div>
+      <figcaption class="evidence-caption" id="evidence-caption">
+        Select a verdict to see {{ 'the moment and region' if media_kind == 'video'
+                                  else 'the region' }} it was found in.
+      </figcaption>
+    </figure>
+  {% endif %}
+
+  {# --- verdicts -----------------------------------------------------------
+     Grouped by band, not sorted by score across all of them. A global score
+     sort interleaves a floor-vetoed 0.91 absent above a 0.62 present, throwing
+     away the most important grouping in the product. #}
+  <div id="verdict-list">
+    {% for band in ['present', 'uncertain', 'absent'] %}
+      {% set group = grouped[band] %}
+      {% if group %}
+        <div class="band-group">
+          <div class="band-group-head">
+            <span class="eyebrow">{{ BANDS[band].word }}</span>
+            <span class="xs subtle tnum">{{ group | length }}</span>
+            <span class="rule"></span>
+          </div>
+          <div class="verdicts">
+            {% for verdict in group %}
+              {% include "partials/verdict_card.html" %}
+            {% endfor %}
+          </div>
+        </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+</div>

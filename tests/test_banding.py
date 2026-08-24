@@ -17,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from dooh.tags.decide import Thresholds, decide
 from inference.banding import band_of, confidence_of
+from tagverify.tags.decide import Thresholds, decide
 
 PACKS = "a5788f8d8e1d"
 ROOT = Path(__file__).resolve().parent.parent
@@ -204,7 +204,7 @@ def test_the_rule_does_not_fingerprint_itself() -> None:
     """
     `decision_version` hashes this file's bytes, and the temptation is to put that hash here
     next to the rule it describes. It cannot go here: banding.py ships flat to the Space and
-    must import nothing (see the test below). The hashing lives in dooh/tags/decide.py.
+    must import nothing (see the test below). The hashing lives in tagverify/tags/decide.py.
     """
     source = (ROOT / "inference" / "banding.py").read_text()
     assert "hashlib" not in source

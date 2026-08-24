@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from dooh.auth import admin
+from tagverify.auth import admin
 from tests.conftest import needs_db
 
 

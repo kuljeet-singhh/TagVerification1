@@ -3,7 +3,7 @@
 # serving HTTP.
 #
 # Two files are copied in as exceptions: inference/banding.py, because the API tier shares the
-# verdict rule with the model service, and inference/versioning.py, because dooh/cli.py imports
+# verdict rule with the model service, and inference/versioning.py, because tagverify/cli.py imports
 # it at module scope and without it the `dooh` console script cannot start in this image. Both
 # import nothing but stdlib, so they cost nothing. Do not "tidy" either path away.
 
@@ -17,7 +17,7 @@ WORKDIR /app
 
 # psycopg[binary] ships wheels, so no libpq-dev and no compiler are needed.
 COPY pyproject.toml README.md ./
-COPY dooh ./dooh
+COPY tagverify ./tagverify
 COPY inference/__init__.py inference/banding.py inference/versioning.py ./inference/
 
 RUN python -m venv /venv && /venv/bin/pip install --no-cache-dir .
@@ -35,7 +35,7 @@ RUN useradd --create-home --uid 10001 dooh
 WORKDIR /app
 
 COPY --from=build /venv /venv
-COPY --from=build /app/dooh ./dooh
+COPY --from=build /app/tagverify ./tagverify
 COPY --from=build /app/inference ./inference
 
 USER dooh
@@ -44,6 +44,6 @@ EXPOSE 8000
 # --proxy-headers so request.url.scheme is the client's, not the proxy hop's. The admin
 # session cookie's Secure flag is taken from it; without this, cookies behind a TLS
 # terminator would be issued without Secure. Set --forwarded-allow-ips to your proxy.
-CMD ["uvicorn", "dooh.main:app", \
+CMD ["uvicorn", "tagverify.main:app", \
      "--host", "0.0.0.0", "--port", "8000", \
      "--proxy-headers", "--forwarded-allow-ips", "*"]
