@@ -43,22 +43,19 @@ dooh = "dooh.cli:app"
 requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
+[tool.setuptools.packages.find]
 # `inference` is a package here so the web app can import the shared banding rule
 # from inference/banding.py. That directory is ALSO git-subtree-pushed to the
 # Hugging Face Space, where it runs flat (no package); see inference/banding.py.
-packages = [
-    "dooh",
-    "dooh.analyze",
-    "dooh.api",
-    "dooh.api.v1",
-    "dooh.auth",
-    "dooh.db",
-    "dooh.inference",
-    "dooh.tags",
-    "dooh.web",
-    "inference",
-]
+#
+# Discovered, not hand-listed. Because `dooh` sits at the repo root it is importable from the
+# working tree whether or not it is declared correctly, so a hand-maintained list can omit a
+# subpackage and ship a broken wheel with a fully green test suite.
+#
+# namespaces = false is load-bearing, not cosmetic: the default is true, and inference/eval/
+# and inference/.testimages/ would otherwise be picked up as PEP-420 namespace packages.
+include = ["dooh*", "inference*"]
+namespaces = false
 
 [tool.setuptools.package-data]
 dooh = ["templates/**/*.html", "static/**/*"]
@@ -71,10 +68,22 @@ filterwarnings = ["ignore::DeprecationWarning"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# ruff honours .gitignore already, which covers all three. Naming them explicitly keeps the
+# model tier's virtualenv and its regenerable image sets out of scope even when ruff is run
+# with --no-respect-gitignore.
+extend-exclude = ["inference/.venv", "inference/eval", "inference/.testimages"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["B008"]  # FastAPI's Depends()/File() defaults are the documented idiom
+
+[tool.ruff.lint.isort]
+# Inside the Hugging Face Space, inference/ runs FLAT: app.py does `from detector import
+# Detector`, not `from .detector import`. Without this, ruff reads those as third-party and
+# merges them into the PIL/torch block, erasing the visual separation between "someone else's
+# code" and "this directory's own modules, imported the way the Space sees them". The shim
+# that makes both forms work is documented in inference/detector.py:56-65.
+known-first-party = ["banding", "detector", "versioning", "dooh", "inference"]
 
 [tool.mypy]
 python_version = "3.12"

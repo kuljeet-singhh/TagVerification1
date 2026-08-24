@@ -136,7 +136,10 @@ def main() -> int:
         elapsed = (time.perf_counter() - start) * 1000
         total_ms += elapsed
 
-        for (tag, expected), v in zip(wanted, verdicts):
+        # strict=True: if the detector returns fewer verdicts than tags asked for, the old
+        # zip() silently dropped the tail and the run still printed a pass. A smoke test that
+        # quietly checks less than it claims is the one bug it cannot afford.
+        for (tag, expected), v in zip(wanted, verdicts, strict=True):
             checked += 1
             got = {True: "present", False: "absent", None: "uncertain"}[v.present]
             want = {True: "present", False: "absent", None: "uncertain"}[expected]

@@ -45,8 +45,9 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from detector import Detector
 from PIL import Image
+
+from detector import Detector
 
 # The banding rule, shared with detector.py and the API tier. A sweep that judged
 # with its own copy of the rule would measure something production does not serve.

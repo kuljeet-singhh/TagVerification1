@@ -1,4 +1,4 @@
-.PHONY: install dev serve-lan test test-fast lint fmt check inference-smoke clean
+.PHONY: install dev serve-lan test test-fast lint fmt typecheck check inference-smoke clean
 
 VENV := .venv
 PY   := $(VENV)/bin/python
@@ -60,12 +60,21 @@ test-fast:
 		tests/test_aggregate.py tests/test_video.py tests/test_templating.py \
 		tests/test_decision_version.py
 
+# All of inference/, not just banding.py. ruff is static, so it needs none of the ML wheels
+# installed in this venv — and the 2,200 lines it used to skip are where the least-reviewed
+# code in the repo lives. The exclusions are in pyproject.toml.
 lint:
-	$(VENV)/bin/ruff check dooh/ tests/ inference/banding.py
+	$(VENV)/bin/ruff check dooh/ tests/ inference/
 
 fmt:
-	$(VENV)/bin/ruff check --fix dooh/ tests/ inference/banding.py
-	$(VENV)/bin/ruff format dooh/ tests/ inference/banding.py
+	$(VENV)/bin/ruff check --fix dooh/ tests/ inference/
+	$(VENV)/bin/ruff format dooh/ tests/ inference/
+
+# [tool.mypy] has been configured since the rewrite with nothing to invoke it. Deliberately
+# not part of `check` yet: it is not clean, and wiring it in before it is would just teach
+# everyone to ignore a red `check`.
+typecheck:
+	$(VENV)/bin/mypy dooh/
 
 check: lint test
 
