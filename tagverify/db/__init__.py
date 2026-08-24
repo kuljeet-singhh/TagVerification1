@@ -1,17 +1,7 @@
-from tagverify.db.session import (
-    DatabaseNotConfigured,
-    dispose_engine,
-    get_session,
-    init_engine,
-    is_configured,
-    session_scope,
-)
+"""
+Database package. Deliberately empty of re-exports.
 
-__all__ = [
-    "DatabaseNotConfigured",
-    "dispose_engine",
-    "get_session",
-    "init_engine",
-    "is_configured",
-    "session_scope",
-]
+This used to forward six names from tagverify.db.session, and nothing ever imported them
+that way — every consumer reaches for tagverify.db.session directly. A forwarding layer with
+no users is just a second name for the same thing, and the two drift.
+"""

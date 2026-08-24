@@ -15,7 +15,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tagverify.auth import admin as auth
@@ -23,6 +23,7 @@ from tagverify.auth.deps import client_ip
 from tagverify.auth.keys import create_api_key, revoke_api_key
 from tagverify.db.models import ApiKey, TagThreshold
 from tagverify.db.session import get_session
+from tagverify.db.thresholds import upsert_threshold
 from tagverify.tags.decide import invalidate_threshold_cache
 from tagverify.templating import render
 
@@ -196,33 +197,10 @@ async def save_threshold(
     if low > high:
         return await row_response("low must not be greater than high.")
 
-    # Upsert, not update. The previous implementation only ever UPDATEd, so a tag present in
-    # packs.json with no row here silently no-opped — the admin pressed Save, nothing
-    # happened, and no error appeared anywhere.
-    await session.execute(
-        text(
-            """
-            insert into tag_thresholds
-              (slug, threshold_low, threshold_high, sigmoid_floor,
-               calibrated, precision, recall, updated_at, updated_by)
-            values (:slug, :low, :high, :floor, false, null, null, now(), 'admin')
-            on conflict (slug) do update set
-              threshold_low = :low,
-              threshold_high = :high,
-              sigmoid_floor = :floor,
-              -- Hand-editing means these are no longer the calibrated numbers.
-              calibrated = false,
-              precision = null,
-              recall = null,
-              updated_at = now(),
-              updated_by = 'admin'
-            """
-        ),
-        {"slug": slug, "low": low, "high": high, "floor": floor},
-    )
-    await session.commit()
+    await upsert_threshold(session, slug, low=low, high=high, floor=floor)
 
     # Clear the 30s memo so the edit lands on the very next request rather than up to half a
-    # minute later — the person who made the change should see it immediately.
+    # minute later — the person who made the change should see it immediately. This stays in
+    # the handler on purpose: the memo is process state, not database state.
     invalidate_threshold_cache()
     return await row_response(saved=True)

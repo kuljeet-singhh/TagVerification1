@@ -23,6 +23,7 @@ import typer
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+import inference
 from inference.versioning import scorer_version
 from tagverify.db.models import EvalImage, TagThreshold
 from tagverify.db.session import session_scope
@@ -30,12 +31,20 @@ from tagverify.db.usage import prune_usage_counters
 
 app = typer.Typer(add_completion=False, help="DOOH Tag Verification operations.")
 
-PACKS = Path("inference/packs.json")
-CALIBRATION = Path("inference/calibration.json")
+# Resolved from the installed `inference` package, not from the process working directory.
+# These were literal Path("inference/...") strings, which meant the `dooh` console script only
+# worked when invoked from the repo root and failed with a bare "file not found" anywhere
+# else. Note the Dockerfile copies only banding.py and versioning.py out of the model tier, so
+# inside the image these paths exist but the files do not — which is correct, since these are
+# operator commands run against a checkout, and the error now names the missing path.
+_INFERENCE_DIR = Path(inference.__file__).resolve().parent
+
+PACKS = _INFERENCE_DIR / "packs.json"
+CALIBRATION = _INFERENCE_DIR / "calibration.json"
 
 
 #: The scoring code, whose bytes are part of the fingerprint alongside the prompts.
-DETECTOR = Path("inference/detector.py")
+DETECTOR = _INFERENCE_DIR / "detector.py"
 
 
 def packs_version(path: Path = PACKS) -> str:
