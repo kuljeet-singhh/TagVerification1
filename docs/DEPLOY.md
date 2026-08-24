@@ -6,7 +6,7 @@ Two independently deployed pieces:
 |---|---|---|
 | the whole repo | GitHub — [`kuljeet-singhh/Dooh-TagVerefication`](https://github.com/kuljeet-singhh/Dooh-TagVerefication) | `git push origin main` |
 | `inference/` | Hugging Face Space (`sdk: gradio`) | `git subtree push` to the Space's remote |
-| `dooh/` (the web app) | any host that runs a container | `docker build` + `docker run` |
+| `tagverify/` (the web app) | any host that runs a container | `docker build` + `docker run` |
 | database | Neon Postgres | already provisioned |
 
 ---
@@ -102,7 +102,7 @@ Or without Docker:
 
 ```bash
 pip install .
-uvicorn dooh.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips '<proxy ip>'
+uvicorn tagverify.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips '<proxy ip>'
 ```
 
 **`--proxy-headers` is not optional behind a TLS terminator.** The admin session cookie's
@@ -148,6 +148,14 @@ dooh seed-thresholds                      # load the 20 tag thresholds from pack
 
 `seed-thresholds` is safe to re-run: rows marked `calibrated` are never overwritten, so
 re-seeding cannot clobber measured thresholds with the guesses in `packs.json`.
+
+> **Run the `dooh` CLI from a checkout, not from the container.** `seed-thresholds` and
+> `apply-calibration` read `inference/packs.json` and `inference/calibration.json`, and the
+> image deliberately carries only three files out of `inference/` — those two data files are
+> not among them. The commands resolve their paths from the installed `inference` package, so
+> they work from any working directory in a checkout and fail with a `FileNotFoundError`
+> naming the missing path inside the image. `create-key` and `prune-usage` touch only the
+> database and run fine either way.
 
 **The existing database needs no migration.** The Python models map onto the same tables the
 previous implementation created, and API keys are still `sha256(plaintext)`, so every key

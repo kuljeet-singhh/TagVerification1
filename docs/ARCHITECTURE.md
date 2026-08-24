@@ -19,8 +19,8 @@ source, and the source wins if they ever disagree.
 2. [System context](#2-system-context)
 3. [Repository map](#3-repository-map)
 4. [Request lifecycle](#4-request-lifecycle)
-5. [Web tier — `dooh/`](#5-web-tier--dooh)
-6. [Analysis pipeline — `dooh/analyze/`](#6-analysis-pipeline--doohanalyze)
+5. [Web tier — `tagverify/`](#5-web-tier--tagverify)
+6. [Analysis pipeline — `tagverify/analyze/`](#6-analysis-pipeline--tagverifyanalyze)
 7. [Model tier — `inference/`](#7-model-tier--inference)
 8. [The verdict rule in full](#8-the-verdict-rule-in-full)
 9. [Fingerprints](#9-fingerprints)
@@ -57,22 +57,22 @@ the aggregation rule and the type signatures all go out of their way to keep the
 
 The failure mode this product exists to prevent is **"we didn't check" presented as "we checked
 and it's clean"**. That sentence, or a variant of it, appears in the source at
-`dooh/analyze/run.py:186-191`, `dooh/analyze/video.py:299-302`, `dooh/analyze/intake.py:14-23`
-and `dooh/analyze/aggregate.py:15-31`. Every partial-result path is an error instead.
+`tagverify/analyze/run.py:186-191`, `tagverify/analyze/video.py:299-302`, `tagverify/analyze/intake.py:14-23`
+and `tagverify/analyze/aggregate.py:15-31`. Every partial-result path is an error instead.
 
 Two consequences that surprise people:
 
 - **An unknown tag fails the whole request.** If a caller misspells `alcohol`, nothing is
   analysed and nothing is returned. Skipping the tag and returning the others would report
-  "clean" for a check that never ran (`dooh/analyze/run.py:110-115`).
+  "clean" for a check that never ran (`tagverify/analyze/run.py:110-115`).
 - **A frame that fails fails the whole video.** There is no partial video result
-  (`dooh/analyze/run.py:197-201`).
+  (`tagverify/analyze/run.py:197-201`).
 
 A second commitment sits alongside the first: **`calibrated: false` must stay visible**. An
 uncalibrated verdict is a guess derived from hand-written provisional thresholds. Presenting a
 guess as a measurement is the same class of error as flattening `null` to `false`, so the flag
-is carried out through the API (`dooh/tags/decide.py:102-126`), the tag catalog
-(`dooh/api/v1/tags.py:58-65`) and the admin UI.
+is carried out through the API (`tagverify/tags/decide.py:102-126`), the tag catalog
+(`tagverify/api/v1/tags.py:58-65`) and the admin UI.
 
 ---
 
@@ -115,7 +115,7 @@ Two details of that integration constrain this service:
 
 ### Two tiers, two virtualenvs, on purpose
 
-| | `dooh/` (web app) | `inference/` (model) |
+| | `tagverify/` (web app) | `inference/` (model) |
 |---|---|---|
 | Job | Serve HTTP: API, playground, docs, admin | Score one still against prompts |
 | venv | `.venv` at the repo root | `inference/.venv` |
@@ -125,13 +125,13 @@ Two details of that integration constrain this service:
 
 The split exists so that serving HTTP does not require 2GB of ML wheels. **Never add `torch`,
 `transformers` or `gradio` to `pyproject.toml`, and never import `inference.detector` from
-`dooh/`.** `av` is not an exception to that rule: it is a codec binding for reading video
+`tagverify/`.** `av` is not an exception to that rule: it is a codec binding for reading video
 (~18MB, ffmpeg bundled in its wheels, no system package), it is not ML, and it does not cross
 the tiers — frame sampling happens in the web tier and the Space still only ever receives a
 single still (`pyproject.toml:22-26`, `AGENTS.md:22-26`).
 
 The one shared file is **`inference/banding.py`**, which imports nothing but `typing`. It lives
-in `inference/` rather than `dooh/` because `inference/` is `git subtree push`-ed to the Space
+in `inference/` rather than `tagverify/` because `inference/` is `git subtree push`-ed to the Space
 and cannot import from the web app — the dependency can only point one way
 (`inference/banding.py:1-25`). `tests/test_banding.py` AST-walks the module and asserts its
 imports are a subset of `{"typing", "__future__"}` so this cannot silently regress.
@@ -149,10 +149,10 @@ try/except import shim (`inference/detector.py:60-65`). Do not "simplify" it awa
           │                                            │
           └──────────────────────┬─────────────────────┘
                                  ▼
-                 dooh/analyze/intake.py      sniff bytes → image | video
+                 tagverify/analyze/intake.py      sniff bytes → image | video
                                  │           sha256, downscale to 768px, sample frames
                                  ▼
-                 dooh/analyze/run.py         ← ONE shared pipeline. No demo path.
+                 tagverify/analyze/run.py         ← ONE shared pipeline. No demo path.
                                  │
         ┌────────────────────────┼──────────────────────────┐
         ▼                        ▼                          ▼
@@ -163,13 +163,13 @@ try/except import shim (`inference/detector.py:60-65`). Do not "simplify" it awa
         │                       │                          │
         └───────────────────────┴──────────┬───────────────┘
                                            ▼
-                             dooh/tags/decide.py     apply thresholds
+                             tagverify/tags/decide.py     apply thresholds
                                            │         (re-decided on EVERY read)
                                            ▼
                              inference/banding.py    ← the verdict rule,
                                            │           shared by all callers
                                            ▼
-                          dooh/analyze/aggregate.py  collapse frames → one per tag
+                          tagverify/analyze/aggregate.py  collapse frames → one per tag
                                            │
                                            ▼
                                        response
@@ -177,7 +177,7 @@ try/except import shim (`inference/detector.py:60-65`). Do not "simplify" it awa
 
 Both entry points run the *same* pipeline. There is no demo path that behaves differently from
 the real one. The playground differs from the API in exactly two ways: it authenticates by IP
-instead of by key, and it renders HTML instead of JSON (`dooh/web/playground.py:4-16`).
+instead of by key, and it renders HTML instead of JSON (`tagverify/web/playground.py:4-16`).
 
 ---
 
@@ -187,7 +187,7 @@ instead of by key, and it renders HTML instead of JSON (`dooh/web/playground.py:
 
 | Path | What it is |
 |---|---|
-| `dooh/` | The web application. One FastAPI process serves the API, playground, docs and admin. |
+| `tagverify/` | The web application. One FastAPI process serves the API, playground, docs and admin. |
 | `inference/` | The SigLIP 2 detector, deployed separately to a Hugging Face Space. |
 | `tests/` | pytest. Runs against the ASGI app in-process. |
 | `docs/` | `DEPLOY.md`, `schema.sql`, and this file. |
@@ -201,45 +201,55 @@ instead of by key, and it renders HTML instead of JSON (`dooh/web/playground.py:
 ### Python, by file
 
 ```
-dooh/                                    inference/
-  __init__.py                  3           __init__.py                 12   (zero imports, on purpose)
-  main.py                    174           banding.py                 106   ← the verdict rule
-  config.py                   54           versioning.py               58
-  cli.py                     290           detector.py                371
-  templating.py              163           app.py                     234   (HF Space entry point)
-  analyze/                                 calibrate.py               538
-    intake.py                464           sweep.py                   315
-    video.py                 329           smoke_test.py              189
-    aggregate.py              79           fetch_demo_eval.py         515
-    run.py                   218
-  api/                                   tests/
-    errors.py                 84           conftest.py                111
-    v1/analyze.py            145           videos.py                  110   (helper, not a module)
-    v1/tags.py                71           test_api.py                517
-    v1/usage.py               47           test_video.py              340
-    v1/health.py              99           test_tag_coverage.py       287
-  auth/                                    test_intake.py             235
-    keys.py                   94           test_banding.py            225
-    authenticate.py          170           test_admin.py              208
-    deps.py                  118           test_aggregate.py          191
-    admin.py                 150           test_decision_version.py   167
-  db/                                      test_templating.py         136
-    models.py                212           test_cli.py                 76
-    session.py               124
-    cache.py                 112         ≈ 9,400 lines of Python in total
-    usage.py                  80
-  inference/client.py        259
+tagverify/                                 inference/
+  __init__.py                  3             __init__.py                12   (zero imports, on purpose)
+  main.py                    174             banding.py                106   ← the verdict rule
+  config.py                   54             versioning.py              58
+  cli.py                     299             detector.py               371
+  templating.py              163             app.py                    234   (HF Space entry point)
+  errors.py                   84             calibrate.py              538
+  analyze/                                   sweep.py                  316
+    intake.py                464             smoke_test.py             192
+    video.py                 329             fetch_demo_eval.py        515
+    aggregate.py              79
+    run.py                   218           tests/
+  api/                                       conftest.py               111
+    v1/analyze.py            145             support/videos.py         112   (helper, never collected)
+    v1/tags.py                71             api/test_analyze.py       329
+    v1/usage.py               47             api/test_errors.py         98
+    v1/health.py              99             api/test_auth.py           53
+  auth/                                      api/test_tags.py           30
+    keys.py                   94             api/test_usage.py          25
+    authenticate.py          170             api/test_health.py         23
+    deps.py                  118             test_video.py             340
+    admin.py                 150             test_tag_coverage.py      287
+  db/                                        test_intake.py            235
+    models.py                212             test_banding.py           225
+    session.py               124             test_admin.py             208
+    cache.py                 112             test_aggregate.py         191
+    usage.py                  80             test_decision_version.py  167
+    thresholds.py             67             test_templating.py        136
+  scoring/client.py          259             test_cli.py                76
   tags/decide.py             324
-  tags/groups.py              72
+  tags/groups.py              72           ≈ 9,500 lines of Python in total
   web/playground.py          210
-  web/admin.py               228
+  web/admin.py               206
   web/docs.py                 69
 ```
+
+Two names in that tree are load-bearing and easy to misread:
+
+- **`scoring/client.py`** is the HTTP client that *calls* the model tier. It is not `inference/`,
+  which *is* the model tier. The two used to both be called `inference`, one nested inside the
+  other, and the rule in `AGENTS.md` about never importing `inference.detector` from the web
+  package existed partly to compensate for that.
+- **`errors.py` sits at the package root**, not under `api/`. `ApiError` is app-wide: `main.py`
+  installs the handlers, `auth/deps.py` raises them, and the web tier renders them as HTML.
 
 ### Templates, CSS, JS (~3,200 lines, no build step)
 
 ```
-dooh/templates/                          dooh/static/
+tagverify/templates/                          tagverify/static/
   base.html                  118           css/app.css                657   ← the design tokens
   _icons.html                 33           css/pages.css              529
   pages/playground.html       98           js/playground.js           480
@@ -271,7 +281,7 @@ There is no `package.json` and nothing here needs Node. Keep it that way (`AGENT
 
 The repo began as a Next.js app (`Initial commit from Create Next App`) and was rewritten in
 Python. **The rewrite is currently staged but not committed** — `git status` shows the whole
-`dooh/` tree added and the whole `app/` tree deleted. Any TypeScript, Drizzle, Vercel or `npm`
+`tagverify/` tree added and the whole `app/` tree deleted. Any TypeScript, Drizzle, Vercel or `npm`
 reference you find in a comment is stale and should be fixed (`AGENTS.md:7-8`); section 16 lists
 the ones known to remain.
 
@@ -284,32 +294,32 @@ line numbers are the ones to breakpoint on.
 
 | # | Step | Where | Notes |
 |---|---|---|---|
-| 1 | `guard` dependency resolves | `dooh/auth/deps.py:40` | Reads `x-api-key` or `Authorization: Bearer`. Authenticates **and charges one unit** in a single CTE before the body is read. 401 / 429 exit here. |
-| 2 | `read_intake` | `dooh/api/v1/analyze.py:37` | Branches on content type: multipart, JSON, or `BAD_REQUEST`. |
-| 3 | `intake.build` | `dooh/analyze/intake.py:389` | Empty check, then `sha256` of the **original** bytes, then `video.looks_like_video(data)` decides the branch. **The bytes decide, never the filename.** |
-| 4a | `_build_image` | `dooh/analyze/intake.py:307` | 10MB cap → verify → downscale to 768px → JPEG q90 → one `Frame` at `t=0.0`. |
-| 4b | `_build_video` | `dooh/analyze/intake.py:330` | 50MB cap → `probe()` → 60s cap → `sample()` → downscale + encode + byte-dedupe each frame. |
-| 5 | `run_analysis` | `dooh/analyze/run.py:92` | The shared pipeline begins. Returns `(outcome, audit_row)`. |
-| 6 | `cached_inference_health()` | `dooh/inference/client.py:227` | 60s memo. Needed first: supplies `packs_version` (part of the cache key) and the tag list. |
-| 7 | **Unknown-tag gate** | `dooh/analyze/run.py:110-115` | Any tag not in the live catalog → `AnalysisRejected`, **before any inference**. Audit row is `None`; nothing was checked. |
-| 8 | `find_cached` | `dooh/db/cache.py:42` | Key = (`image_hash`, `packs_version`, sorted tag set). Returns **raw scores**, never verdicts. |
-| 9 | `cached_thresholds` | `dooh/tags/decide.py:248` | 30s memo over `tag_thresholds`. Invalidated explicitly when admin saves. |
-| 10 | `_score_frames` | `dooh/analyze/run.py:179` | Cache miss only. **Sequential** — the Space is one queued process on two free vCPUs. `TOTAL_BUDGET_S = 30.0` checked *between* frames. Any frame failing raises. |
-| 11 | `decide_all` | `dooh/tags/decide.py:207` | Every frame decided independently against the thresholds. |
-| 12 | `aggregate` | `dooh/analyze/aggregate.py:63` | Collapse per-frame verdicts to one per tag: present > uncertain > absent, highest score inside the winning band. |
-| 13 | `charge_extra` | `dooh/auth/authenticate.py:96` | `frames_analyzed - 1` extra units, **only on a cache miss**. Best-effort; failures are logged, not raised. |
-| 14 | `background.add_task(write_audit)` | `dooh/api/v1/analyze.py:109` | The audit row is written after the response, in its own session. |
-| 15 | Response | `dooh/api/v1/analyze.py:115-145` | 200 + `X-RateLimit-Limit` / `X-RateLimit-Remaining`. |
+| 1 | `guard` dependency resolves | `tagverify/auth/deps.py:40` | Reads `x-api-key` or `Authorization: Bearer`. Authenticates **and charges one unit** in a single CTE before the body is read. 401 / 429 exit here. |
+| 2 | `read_intake` | `tagverify/api/v1/analyze.py:37` | Branches on content type: multipart, JSON, or `BAD_REQUEST`. |
+| 3 | `intake.build` | `tagverify/analyze/intake.py:389` | Empty check, then `sha256` of the **original** bytes, then `video.looks_like_video(data)` decides the branch. **The bytes decide, never the filename.** |
+| 4a | `_build_image` | `tagverify/analyze/intake.py:307` | 10MB cap → verify → downscale to 768px → JPEG q90 → one `Frame` at `t=0.0`. |
+| 4b | `_build_video` | `tagverify/analyze/intake.py:330` | 50MB cap → `probe()` → 60s cap → `sample()` → downscale + encode + byte-dedupe each frame. |
+| 5 | `run_analysis` | `tagverify/analyze/run.py:92` | The shared pipeline begins. Returns `(outcome, audit_row)`. |
+| 6 | `cached_inference_health()` | `tagverify/scoring/client.py:227` | 60s memo. Needed first: supplies `packs_version` (part of the cache key) and the tag list. |
+| 7 | **Unknown-tag gate** | `tagverify/analyze/run.py:110-115` | Any tag not in the live catalog → `AnalysisRejected`, **before any inference**. Audit row is `None`; nothing was checked. |
+| 8 | `find_cached` | `tagverify/db/cache.py:42` | Key = (`image_hash`, `packs_version`, sorted tag set). Returns **raw scores**, never verdicts. |
+| 9 | `cached_thresholds` | `tagverify/tags/decide.py:248` | 30s memo over `tag_thresholds`. Invalidated explicitly when admin saves. |
+| 10 | `_score_frames` | `tagverify/analyze/run.py:179` | Cache miss only. **Sequential** — the Space is one queued process on two free vCPUs. `TOTAL_BUDGET_S = 30.0` checked *between* frames. Any frame failing raises. |
+| 11 | `decide_all` | `tagverify/tags/decide.py:207` | Every frame decided independently against the thresholds. |
+| 12 | `aggregate` | `tagverify/analyze/aggregate.py:63` | Collapse per-frame verdicts to one per tag: present > uncertain > absent, highest score inside the winning band. |
+| 13 | `charge_extra` | `tagverify/auth/authenticate.py:96` | `frames_analyzed - 1` extra units, **only on a cache miss**. Best-effort; failures are logged, not raised. |
+| 14 | `background.add_task(write_audit)` | `tagverify/api/v1/analyze.py:109` | The audit row is written after the response, in its own session. |
+| 15 | Response | `tagverify/api/v1/analyze.py:115-145` | 200 + `X-RateLimit-Limit` / `X-RateLimit-Remaining`. |
 
-The playground's `POST /ui/analyze` (`dooh/web/playground.py:128`) enters at step 2 with an
+The playground's `POST /ui/analyze` (`tagverify/web/playground.py:128`) enters at step 2 with an
 IP-based limiter instead of step 1, passes `api_key_id=None`, and renders
 `partials/results.html` instead of JSON. Steps 3–14 are byte-for-byte the same code.
 
 ---
 
-## 5. Web tier — `dooh/`
+## 5. Web tier — `tagverify/`
 
-`dooh/__init__.py` is three lines: a docstring and `__version__ = "1.0.0"`.
+`tagverify/__init__.py` is three lines: a docstring and `__version__ = "1.0.0"`.
 
 ### 5.1 Application construction — `main.py` (174 lines)
 
@@ -325,7 +335,7 @@ app = FastAPI(
 ```
 
 FastAPI's auto-generated docs are **disabled deliberately**: `/docs` is the project's own
-hand-written page (`dooh/web/docs.py`), and a generated schema would be a competing, less
+hand-written page (`tagverify/web/docs.py`), and a generated schema would be a competing, less
 accurate description of the same API.
 
 - Static mount (`main.py:88`): `app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")`.
@@ -400,27 +410,27 @@ Fourteen declared routes plus the static mount.
 
 | Method | Path | Handler | Auth |
 |---|---|---|---|
-| `POST` | `/api/v1/analyze` | `dooh/api/v1/analyze.py:73` | API key (`guard`) |
-| `GET` | `/api/v1/tags` | `dooh/api/v1/tags.py:26` | API key (`guard`) |
-| `GET` | `/api/v1/usage` | `dooh/api/v1/usage.py:22` | API key (`guard`) |
-| `GET` | `/api/v1/health` | `dooh/api/v1/health.py:82` | **none, on purpose** |
-| `GET` | `/` | `dooh/web/playground.py:98` | none |
-| `GET` | `/ui/catalog` | `dooh/web/playground.py:107` | none |
-| `POST` | `/ui/analyze` | `dooh/web/playground.py:128` | per-IP rate limit |
-| `GET` | `/docs` | `dooh/web/docs.py:46` | none |
-| `GET` | `/admin` | `dooh/web/admin.py:63` | session cookie |
-| `POST` | `/admin/login` | `dooh/web/admin.py:81` | throttled per IP |
-| `POST` | `/admin/logout` | `dooh/web/admin.py:110` | none (logging out needs no session) |
-| `POST` | `/admin/keys` | `dooh/web/admin.py:120` | `require_admin` + CSRF |
-| `POST` | `/admin/keys/{key_id}/revoke` | `dooh/web/admin.py:156` | `require_admin` + CSRF |
-| `POST` | `/admin/thresholds/{slug}` | `dooh/web/admin.py:169` | `require_admin` + CSRF |
+| `POST` | `/api/v1/analyze` | `tagverify/api/v1/analyze.py:73` | API key (`guard`) |
+| `GET` | `/api/v1/tags` | `tagverify/api/v1/tags.py:26` | API key (`guard`) |
+| `GET` | `/api/v1/usage` | `tagverify/api/v1/usage.py:22` | API key (`guard`) |
+| `GET` | `/api/v1/health` | `tagverify/api/v1/health.py:82` | **none, on purpose** |
+| `GET` | `/` | `tagverify/web/playground.py:98` | none |
+| `GET` | `/ui/catalog` | `tagverify/web/playground.py:107` | none |
+| `POST` | `/ui/analyze` | `tagverify/web/playground.py:128` | per-IP rate limit |
+| `GET` | `/docs` | `tagverify/web/docs.py:46` | none |
+| `GET` | `/admin` | `tagverify/web/admin.py:64` | session cookie |
+| `POST` | `/admin/login` | `tagverify/web/admin.py:82` | throttled per IP |
+| `POST` | `/admin/logout` | `tagverify/web/admin.py:111` | none (logging out needs no session) |
+| `POST` | `/admin/keys` | `tagverify/web/admin.py:121` | `require_admin` + CSRF |
+| `POST` | `/admin/keys/{key_id}/revoke` | `tagverify/web/admin.py:157` | `require_admin` + CSRF |
+| `POST` | `/admin/thresholds/{slug}` | `tagverify/web/admin.py:170` | `require_admin` + CSRF |
 | — | `/static/*` | `StaticFiles` mount, `main.py:88` | none |
 
 ### 5.4 The public API
 
 #### `POST /api/v1/analyze`
 
-**Accepted request shapes** — all three go through `dooh/analyze/intake.py`:
+**Accepted request shapes** — all three go through `tagverify/analyze/intake.py`:
 
 | Content type | Media field | Tags field |
 |---|---|---|
@@ -513,7 +523,7 @@ if not outcome.cached and outcome.frames_analyzed > 1:
 where six frames is six times the model time. The difference is charged after the fact so a
 video cannot be used as the cheap way to consume six times the capacity. **A cache hit ran
 nothing and stays one unit**, which is what `not outcome.cached` guarantees.
-`tests/test_api.py:398` pins both halves.
+`tests/api/test_analyze.py:210` pins both halves.
 
 #### `GET /api/v1/tags`
 
@@ -537,7 +547,7 @@ calibrated even though it is still applied.
 **Thresholds are never exposed.** Publishing them would invite gaming and freeze them into the
 public contract. `decision_version` is not an exception: it is a truncated one-way hash of them,
 published so a caller can key its own cache on the rule that produced a verdict instead of
-serving a superseded one. `tests/test_api.py:174` asserts no threshold field name appears
+serving a superseded one. `tests/api/test_tags.py:26` asserts no threshold field name appears
 anywhere in the response text.
 
 #### `GET /api/v1/usage`
@@ -587,7 +597,7 @@ module **this process loaded**, once, at import. Compare it with
 server started without `--reload` once served a superseded rule for hours with nothing anywhere
 saying so.
 
-### 5.5 The error envelope — `api/errors.py` (84 lines)
+### 5.5 The error envelope — `errors.py` (84 lines)
 
 Flat, never nested: `{"error": CODE, "message": "...", ...extra}`. Extras are merged into the
 same object; `retry_after`, when an `int`, is also emitted as a `Retry-After` header so
@@ -683,7 +693,7 @@ because the caller has already received a real answer.
 2. Still absent → `MISSING_KEY` (401).
 3. `authenticate_and_charge`. Not `AuthOk` → `INVALID_KEY` (401). **Unknown and revoked keys
    return byte-identical responses** — never confirm a key exists (`AGENTS.md` rule 8,
-   `tests/test_api.py` pins it).
+   `tests/api/test_auth.py` pins it).
 4. **The charge happens before the limit check.** `if outcome.count > outcome.limit:` →
    `RATE_LIMITED` (429) with `retry_after` and `limit`. Note the strict `>`: the limit-th
    request succeeds. An over-limit request **still increments the counter**, so a client that
@@ -905,7 +915,7 @@ select request_id, results, packs_version
 ```
 
 The key is **(image sha256, sorted tag set, packs_version)**. Sorting on both sides means tag
-order never fragments the cache (`tests/test_api.py` asserts a reordered tag list is a hit).
+order never fragments the cache (`tests/api/test_analyze.py` asserts a reordered tag list is a hit).
 
 `record_analysis(...)` (`cache.py:74`) is keyword-only and opens its **own** `session_scope()`,
 because it runs as a background task detached from the request session. It is wrapped in
@@ -922,6 +932,26 @@ the sweeper: `utc_midnight()`, `usage_today()`, `analyses_today()` (returns `(an
 cache_hits, avg_latency_ms)` in one query), and `prune_usage_counters()`
 (`delete from usage_counters where window_start < now() - interval '1 day'`), wired to both
 `dooh prune-usage` and the daily lifespan task.
+
+#### Threshold writes — `thresholds.py` (67 lines)
+
+One function, `upsert_threshold(session, slug, *, low, high, floor)`. It is an **upsert, not an
+update**: the previous implementation only ever `UPDATE`d, so a tag present in `packs.json` with
+no row here silently no-opped — the admin pressed Save, nothing happened, and no error appeared
+anywhere.
+
+It sets `calibrated = false` and clears `precision`/`recall`, because numbers a human typed are
+no longer the ones `calibrate.py` measured. Leaving the flag true would let a guess keep
+presenting itself as a measurement.
+
+It does **not** invalidate the 30-second threshold memo. That is the caller's job
+(`web/admin.py` calls `invalidate_threshold_cache()` immediately after), because the memo is
+process state rather than database state and a writer must not reach into the serving path. Skip
+it and a saved threshold takes up to half a minute to appear, with nothing saying why.
+
+Reads live in `tags/decide.py`, next to the memo and the rule that applies them. This is the only
+path that sets thresholds by hand; `dooh apply-calibration` writes measured numbers through the
+CLI, and `updated_by` records which happened — `'admin'`, `'calibrate'` or `'seed'`.
 
 ### 5.9 The decision layer — `tags/decide.py` (324 lines)
 
@@ -1269,7 +1299,7 @@ Two bugs are documented inline in `apply-calibration` and pinned by `tests/test_
 
 ---
 
-## 6. Analysis pipeline — `dooh/analyze/`
+## 6. Analysis pipeline — `tagverify/analyze/`
 
 ### 6.1 Intake — `intake.py` (464 lines)
 
@@ -1594,7 +1624,7 @@ release with SigLIP 2), `gradio>=5.0.0`, `pillow>=10.0.0`, `numpy>=1.26.0`, off 
 PyTorch index — on Linux that avoids ~2GB of unused CUDA libraries, and the index is additive so
 pip still falls back to PyPI on macOS arm64.
 
-### 7.4 The client — `dooh/inference/client.py` (259 lines)
+### 7.4 The client — `tagverify/scoring/client.py` (259 lines)
 
 The **only** module that knows the inference service is a Gradio Space.
 
@@ -1794,9 +1824,9 @@ Four hashes, all 12 hex characters (48 bits), each answering a different questio
 | Fingerprint | Covers | Computed as | Where |
 |---|---|---|---|
 | `packs_version` | The prompts **and** the scoring code | `sha256(packs.json bytes + b"\x00" + detector.py bytes)[:12]` | `inference/versioning.py:43` |
-| `RULE_VERSION` | The verdict rule alone | `sha256(banding.py bytes)[:12]`, read **once at import** | `dooh/tags/decide.py:45` |
-| `SAMPLER_VERSION` | Which frames of a video get scored | `sha256(dooh/analyze/video.py bytes)[:12]`, once at import | `dooh/tags/decide.py:64` |
-| `decision_version` | The rule, the sampler **and** every threshold | The fold in §5.9, seeded with `RULE_VERSION\|SAMPLER_VERSION` | `dooh/tags/decide.py:257` |
+| `RULE_VERSION` | The verdict rule alone | `sha256(banding.py bytes)[:12]`, read **once at import** | `tagverify/tags/decide.py:45` |
+| `SAMPLER_VERSION` | Which frames of a video get scored | `sha256(tagverify/analyze/video.py bytes)[:12]`, once at import | `tagverify/tags/decide.py:64` |
+| `decision_version` | The rule, the sampler **and** every threshold | The fold in §5.9, seeded with `RULE_VERSION\|SAMPLER_VERSION` | `tagverify/tags/decide.py:257` |
 
 The rule of thumb: **if a change moves a NUMBER it belongs in `packs_version`; if it changes how
 that number is READ, it belongs in `decision_version`** (`AGENTS.md` rule 6).
@@ -1934,13 +1964,13 @@ Two more that are not numbered in `AGENTS.md` but behave like invariants:
 
 ## 12. Testing
 
-**254 collected cases across 10 modules**, plus `conftest.py` and the `videos.py` helper. Tests
+**254 collected cases across 15 modules**, plus `conftest.py` and `tests/support/`. Tests
 run against the ASGI app **in-process** via `httpx.ASGITransport`, so no server has to be started
 and no port has to be free.
 
 | File | Lines | Cases | Covers |
 |---|---|---|---|
-| `test_api.py` | 517 | 31 | The public API end to end: health, auth, error envelope, SSRF, tags, usage, analyze, video, per-frame billing. |
+| `api/` | 558 | 31 | The public API end to end, one file per endpoint — `test_analyze.py` (stills and video; per-frame billing), `test_errors.py` (envelope, SSRF, unknown tag), `test_auth.py`, `test_tags.py`, `test_usage.py`, `test_health.py`. |
 | `test_tag_coverage.py` | 287 | 65 | All 20 tags detect their own canonical content, as a still and inside a video. |
 | `test_intake.py` | 235 | 45 | SSRF guard, tag normalisation, size limits, JSON shapes, form field discovery. |
 | `test_banding.py` | 225 | 27 | **The decision layer.** See below. |
@@ -1971,7 +2001,7 @@ carried whole from one frame and that a single frame passes through untouched.
 
 ### What skips, and why
 
-Skip markers are defined in `tests/conftest.py:49-54` and read `dooh.config.settings()` — **not**
+Skip markers are defined in `tests/conftest.py:49-54` and read `tagverify.config.settings()` — **not**
 `os.environ`, because values come from `.env`/`.env.local`, which pydantic-settings loads but
 never exports.
 
@@ -1997,7 +2027,7 @@ golden images call `pytest.skip` properly.
   three keys that actually mattered. Safe because `analyses.api_key_id` is `ON DELETE SET NULL`.
 - `beer_video` — beer in **one scene of three**. It is the case the whole video path exists for:
   a first-frame check would miss it entirely.
-- `tests/videos.py` — an in-memory MP4 encoder (`av`'s wheels bundle ffmpeg, so `libx264` needs
+- `tests/support/videos.py` — an in-memory MP4 encoder (`av`'s wheels bundle ffmpeg, so `libx264` needs
   no system package). `middle_scene_clip()`, `unique_two_scene_clip()` (randomised colours, so
   the sha256 is new and the dedupe keeps both — random *noise* would not work, it averages to
   the same mid-grey on the comparison grid), and `truncated()` (decodable magic, undecodable
@@ -2043,11 +2073,11 @@ name, `.env.local` is what this checkout already had, so both work. `PORT` defau
 | Target | Runs |
 |---|---|
 | `install` | `python3 -m venv .venv` then `.venv/bin/pip install -e ".[dev]"` |
-| `dev` | `.venv/bin/uvicorn dooh.main:app --reload --env-file $(ENV_FILE) --port $(PORT)` |
+| `dev` | `.venv/bin/uvicorn tagverify.main:app --reload --env-file $(ENV_FILE) --port $(PORT)` |
 | `serve-lan` | the same, plus `--host 0.0.0.0`, behind a banner printing the reachable address |
 | `test` | `.venv/bin/python -m pytest` |
 | `test-fast` | pytest over `test_banding`, `test_intake`, `test_aggregate`, `test_video`, `test_templating`, `test_decision_version` |
-| `lint` | `ruff check dooh/ tests/ inference/banding.py` |
+| `lint` | `ruff check tagverify/ tests/ inference/banding.py` |
 | `fmt` | `ruff check --fix` then `ruff format`, same paths |
 | `check` | `lint test` |
 | `inference-smoke` | `cd inference && ./.venv/bin/python smoke_test.py` |
@@ -2083,7 +2113,7 @@ on by default for a lot of ISP routers and always on for guest SSIDs.
 |---|---|
 | Name / version | `dooh-tag-verification` 1.0.0 |
 | Python | `>=3.12` |
-| Entry point | `dooh = "dooh.cli:app"` |
+| Entry point | `dooh = "tagverify.cli:app"` |
 
 | Dependency | Constraint | Role |
 |---|---|---|
@@ -2105,32 +2135,42 @@ Dev extras: `pytest>=8.3`, `pytest-asyncio>=0.25`, `ruff>=0.8`, `mypy>=1.14`.
 
 Tooling: ruff `line-length = 100`, `target-version = "py312"`, `select = ["E","F","I","UP","B","SIM"]`,
 `ignore = ["B008"]` (FastAPI's `Depends()`/`File()` defaults are the documented idiom). pytest
-`asyncio_mode = "auto"`. mypy is configured but **not wired into any Makefile target** — `check`
-is `lint test`.
+`asyncio_mode = "auto"`. mypy has a `make typecheck` target but is deliberately **not** part of
+`check`, which stays `lint test` until mypy is clean — a red `check` that everyone ignores is
+worse than no target.
 
-`[tool.setuptools] packages` lists `inference` alongside the `dooh.*` packages, because the web
-app imports the shared banding rule from it. That same directory is git-subtree-pushed to the
-Space, where it runs flat.
+Packages are **discovered**, not hand-listed: `[tool.setuptools.packages.find]` with
+`include = ["tagverify*", "inference*"]`. The list used to be written out by hand, which is a
+silent-failure shape — `tagverify/` sits at the repo root and so is importable from the working
+tree whether or not it is declared, meaning a forgotten entry ships a broken wheel with a fully
+green test suite. `namespaces = false` is load-bearing: the default is `true`, and
+`inference/eval/` and `inference/.testimages/` would otherwise be picked up as PEP-420 namespace
+packages.
+
+`inference` is discovered alongside `tagverify` because the web app imports the shared banding
+rule from it. That same directory is git-subtree-pushed to the Space, where it runs flat.
 
 ### Dockerfile
 
 Two stages, both `python:3.12-slim`. **The web application only.**
 
-Stage 1 copies `pyproject.toml`, `README.md`, `dooh/`, and — critically — **only two files from
+Stage 1 copies `pyproject.toml`, `README.md`, `tagverify/`, and — critically — **only three files from
 the model tier**:
 
 ```dockerfile
-COPY inference/__init__.py inference/banding.py ./inference/
+COPY inference/__init__.py inference/banding.py inference/versioning.py ./inference/
 ```
 
-Never `detector.py`, never `requirements.txt`. `banding.py` imports nothing, so it costs
+Never `detector.py`, never `requirements.txt`. `versioning.py` is there because `cli.py`
+imports it at module scope, and without it the `dooh` console script could not start inside
+the image. All three import nothing but stdlib, so they cost
 nothing; copying the rest would drag ~2GB of torch into an image whose job is serving HTTP.
 
 Stage 2 creates an unprivileged user (`useradd --uid 10001 dooh`), copies the venv and the app,
 switches to that user, exposes **8000**, and runs:
 
 ```dockerfile
-CMD ["uvicorn", "dooh.main:app", "--host", "0.0.0.0", "--port", "8000",
+CMD ["uvicorn", "tagverify.main:app", "--host", "0.0.0.0", "--port", "8000",
      "--proxy-headers", "--forwarded-allow-ips", "*"]
 ```
 
@@ -2231,7 +2271,7 @@ curl -s https://<your-app>/api/v1/health | jq .
 
 ## 14. Configuration reference
 
-Read once at import by `dooh/config.py`, from the environment and from `.env` (and `.env.local`).
+Read once at import by `tagverify/config.py`, from the environment and from `.env` (and `.env.local`).
 **Nothing raises on a missing value.**
 
 | Variable | Required | Default | What it does | If unset |
@@ -2256,30 +2296,30 @@ Backend-side (in `dooh-backend`, not here): `PROFILE_API_URL`, `PROFILE_API_KEY`
 
 | Constant | Value | Where |
 |---|---|---|
-| `MAX_IMAGE_BYTES` | 10 MB | `dooh/analyze/intake.py:52` |
-| `MAX_EDGE` | 768 px | `dooh/analyze/intake.py:58` |
-| `JPEG_QUALITY` | 90 | `dooh/analyze/intake.py:59` |
-| `MAX_VIDEO_BYTES` | 50 MB | `dooh/analyze/video.py:44` |
-| `MAX_DURATION_S` | 60.0 s | `dooh/analyze/video.py:48` |
-| `MAX_FRAMES` | 6 | `dooh/analyze/video.py:57` |
-| `MIN_FRAME_GAP_S` | 0.35 s | `dooh/analyze/video.py:60` |
-| `SIGNATURE_DISTANCE` | 8.0 (mean abs diff, 0–255) | `dooh/analyze/video.py:65` |
-| `SIGNATURE_GRID` | 8 (→ 192 values) | `dooh/analyze/video.py:68` |
-| `TOTAL_BUDGET_S` | 30.0 s | `dooh/analyze/run.py:50` |
-| `_PRECEDENCE` | `{absent:0, uncertain:1, present:2}` | `dooh/analyze/aggregate.py:55` |
-| `CALL_TIMEOUT_S` | 8.0 s | `dooh/inference/client.py:109` |
-| `CONNECT_TIMEOUT_S` | 6.0 s | `dooh/inference/client.py:110` |
-| Health / catalog memo | 60.0 s | `dooh/inference/client.py:233` |
-| Threshold memo | 30.0 s | `dooh/tags/decide.py:244` |
-| `FALLBACK` thresholds | low 0.3 / high 0.55 / floor 0.005 | `dooh/tags/decide.py:143` |
+| `MAX_IMAGE_BYTES` | 10 MB | `tagverify/analyze/intake.py:52` |
+| `MAX_EDGE` | 768 px | `tagverify/analyze/intake.py:58` |
+| `JPEG_QUALITY` | 90 | `tagverify/analyze/intake.py:59` |
+| `MAX_VIDEO_BYTES` | 50 MB | `tagverify/analyze/video.py:44` |
+| `MAX_DURATION_S` | 60.0 s | `tagverify/analyze/video.py:48` |
+| `MAX_FRAMES` | 6 | `tagverify/analyze/video.py:57` |
+| `MIN_FRAME_GAP_S` | 0.35 s | `tagverify/analyze/video.py:60` |
+| `SIGNATURE_DISTANCE` | 8.0 (mean abs diff, 0–255) | `tagverify/analyze/video.py:65` |
+| `SIGNATURE_GRID` | 8 (→ 192 values) | `tagverify/analyze/video.py:68` |
+| `TOTAL_BUDGET_S` | 30.0 s | `tagverify/analyze/run.py:50` |
+| `_PRECEDENCE` | `{absent:0, uncertain:1, present:2}` | `tagverify/analyze/aggregate.py:55` |
+| `CALL_TIMEOUT_S` | 8.0 s | `tagverify/scoring/client.py:109` |
+| `CONNECT_TIMEOUT_S` | 6.0 s | `tagverify/scoring/client.py:110` |
+| Health / catalog memo | 60.0 s | `tagverify/scoring/client.py:233` |
+| Threshold memo | 30.0 s | `tagverify/tags/decide.py:244` |
+| `FALLBACK` thresholds | low 0.3 / high 0.55 / floor 0.005 | `tagverify/tags/decide.py:143` |
 | Fingerprint length | 12 hex chars (48 bits) | `decide.py:45,64,318`; `inference/versioning.py:40` |
 | Confidence margins | high ≥ 0.20, medium ≥ 0.08 | `inference/banding.py:104-106` |
-| `KEY_PREFIX` | `dooh_live_` | `dooh/auth/keys.py:33` |
-| `SECRET_BYTES` / `DISPLAY_CHARS` | 32 / 8 | `dooh/auth/keys.py:34-35` |
-| Admin cookie name / max age | `dooh_admin` / 7 days | `dooh/auth/admin.py:28-29` |
-| Default key rate limit | 60 / min (1–10000) | `dooh/db/models.py`, `dooh/cli.py` |
+| `KEY_PREFIX` | `dooh_live_` | `tagverify/auth/keys.py:33` |
+| `SECRET_BYTES` / `DISPLAY_CHARS` | 32 / 8 | `tagverify/auth/keys.py:34-35` |
+| Admin cookie name / max age | `dooh_admin` / 7 days | `tagverify/auth/admin.py:28-29` |
+| Default key rate limit | 60 / min (1–10000) | `tagverify/db/models.py`, `tagverify/cli.py` |
 | Rate-limit window | 60 s fixed (API), 60 s sliding (playground, admin login) | `authenticate.py`, `deps.py`, `admin.py` |
-| DB pool | `pool_size=5, max_overflow=5, pool_recycle=300, pool_pre_ping=True` | `dooh/db/session.py:62` |
+| DB pool | `pool_size=5, max_overflow=5, pool_recycle=300, pool_pre_ping=True` | `tagverify/db/session.py:62` |
 | `MODEL_ID` | `google/siglip2-base-patch16-224` | `inference/detector.py:67` |
 | `MAX_TEXT_LEN` | 64 | `inference/detector.py:72` |
 | Crop grid | 3 → 10 crops (full image + 3×3 at size 0.5, step 0.25) | `inference/detector.py:107` |
@@ -2303,16 +2343,16 @@ mislead someone reading the repo.
 
 | # | Drift | Where | Why it matters |
 |---|---|---|---|
-| 1 | The Python rewrite is **staged but not committed**. `git status` shows the whole `dooh/` tree added and the whole Next.js `app/` tree deleted. | `git status` | A fresh clone of `origin/main` gets the Next.js app, not this one. |
-| 2 | `dooh_tag_verification.egg-info/` is stale: it lists **`alembic>=1.14`** as a runtime dependency (`pyproject.toml` deliberately has no migration tool) and **omits `av>=13`**. `SOURCES.txt` predates the video work — no `video.py`, no `aggregate.py`. | `dooh_tag_verification.egg-info/` | It is git-ignored and regenerated on install, so it is harmless — but it is the first thing a dependency audit reads. |
+| 1 | ~~The Python rewrite is staged but not committed.~~ **Resolved.** Committed as `e5b5365`, with the Next.js `app/` tree removed in the same commit. | — | — |
+| 2 | ~~`dooh_tag_verification.egg-info/` is stale.~~ **Resolved.** Regenerated during the `dooh` → `tagverify` rename: `alembic` is gone, `av>=13` is present, and `SOURCES.txt` covers the video work. It stays git-ignored. | — | — |
 | 3 | `inference/README.md`'s sample response shows `"packs_version": "1a2db18ba940"`. The current value is **`c14ac5bdcfa9`**. | `inference/README.md` | Someone comparing a live response against the docs will think the pack is wrong. |
 | 4 | `detect_objects` is present on 19 of 20 tags in `packs.json` and is **never read** by `detector.py`, `app.py`, `calibrate.py` or `sweep.py`. | `inference/packs.json` | Dead metadata that reads as a feature. Note it is inside the hashed bytes, so editing it moves `packs_version` for no behavioural reason. |
 | 5 | `detector.py`'s docstring says "~250 prompts"; the actual unique row count is **266**. | `inference/detector.py:150-160` | Minor, but the number appears in `/api/v1/health` where it can be checked. |
-| 6 | Comments in `inference/app.py:6` and `dooh/inference/client.py` still refer to "the Next.js API tier". | those files | `AGENTS.md:7-8` says any such reference is stale and should be fixed. |
-| 7 | `calibration.json`'s `held_back` block and the 12 rewritten `reason` strings are **hand-authored**, not emitted by `calibrate.py`. Nothing in `dooh/cli.py` reads `held_back` — it filters on `calibrated` alone. | `inference/calibration.json` | Re-running `calibrate.py` overwrites the file and silently loses that reasoning. Copy it out before recalibrating. |
+| 6 | Comments in `inference/app.py:6` and `tagverify/scoring/client.py` still refer to "the Next.js API tier". | those files | `AGENTS.md:7-8` says any such reference is stale and should be fixed. |
+| 7 | `calibration.json`'s `held_back` block and the 12 rewritten `reason` strings are **hand-authored**, not emitted by `calibrate.py`. Nothing in `tagverify/cli.py` reads `held_back` — it filters on `calibrated` alone. | `inference/calibration.json` | Re-running `calibrate.py` overwrites the file and silently loses that reasoning. Copy it out before recalibrating. |
 | 8 | `ADMIN_LOGIN_ATTEMPTS_PER_MIN` is documented in `docs/DEPLOY.md` but is **missing from `.env.example`**. | `.env.example` | An operator copying the example never learns the knob exists. |
 | 9 | ⚠️ The Neon connection string in `.env.local` **was shared in a chat transcript and has not been rotated**. | `docs/DEPLOY.md:14-18` | The one item on this list that is a live security issue. Rotate before this handles anything real. |
-| 10 | mypy is configured in `pyproject.toml` but is not run by any Makefile target. | `pyproject.toml`, `Makefile` | `make check` is `lint test`; type errors are never surfaced in CI or locally. |
+| 10 | mypy has a `make typecheck` target but is still **not** part of `make check`, deliberately — it is not clean yet, and a red `check` that everyone learns to ignore is worse than no target. | `Makefile` | Type errors are surfaced on demand but not enforced. Fold it into `check` once it passes. |
 
 ---
 

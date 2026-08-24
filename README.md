@@ -34,7 +34,7 @@ same as absent, and the API, the UI and the docs all go out of their way to keep
                         │                              │
                         └───────────┬──────────────────┘
                                     ▼
-                       dooh/analyze/run.py            ← one shared pipeline
+                       tagverify/analyze/run.py            ← one shared pipeline
                                     │
               ┌─────────────────────┼──────────────────────┐
               ▼                     ▼                      ▼
@@ -53,18 +53,18 @@ There is no demo path that behaves differently from the real one.
 
 | Path | What it is |
 |---|---|
-| `dooh/` | The web application: FastAPI, Jinja2 templates, HTMX. One process serves the API, the playground, the docs and the admin. |
+| `tagverify/` | The web application: FastAPI, Jinja2 templates, HTMX. One process serves the API, the playground, the docs and the admin. |
 | `inference/` | The SigLIP 2 detector, deployed separately to a Hugging Face Space. Has its own `requirements.txt` and virtualenv on purpose — the web app must never depend on torch. |
 | `inference/banding.py` | The rule that turns a score into a verdict. Imported by the detector, by the calibration sweep, and by the API. **The single source of truth — do not copy it.** |
-| `dooh/analyze/video.py` | Decoding a video and choosing which frames are worth scoring. Keyframes, then a colour-aware dedupe. |
-| `dooh/analyze/aggregate.py` | The rule that collapses per-frame verdicts into one per tag. Pure, like `banding.py`, and tested the same way. |
+| `tagverify/analyze/video.py` | Decoding a video and choosing which frames are worth scoring. Keyframes, then a colour-aware dedupe. |
+| `tagverify/analyze/aggregate.py` | The rule that collapses per-frame verdicts into one per tag. Pure, like `banding.py`, and tested the same way. |
 | `tests/` | pytest. Runs against the ASGI app in-process; tests needing the database or the model skip cleanly when those are not configured. |
 | `docs/DEPLOY.md` | Deployment, regions, keepalive, credential rotation. |
 | `docs/schema.sql` | The database schema, for reference and for provisioning by hand. |
 
 **Two virtualenvs, deliberately.** `.venv` at the repo root serves HTTP; `inference/.venv` runs
 the model. Never add `torch`, `transformers` or `gradio` to `pyproject.toml`, and never import
-`inference.detector` from `dooh/` — the split is what keeps a web deploy from pulling 2GB of ML
+`inference.detector` from `tagverify/` — the split is what keeps a web deploy from pulling 2GB of ML
 wheels. The one shared file is `inference/banding.py`, which imports nothing.
 
 ## Quick start
@@ -91,7 +91,7 @@ downloads ~400MB of SigLIP 2 weights; after that startup is a few seconds.
 
 ## Configuration
 
-Read once at import by `dooh/config.py`, from the environment and from `.env` (`.env.local` is
+Read once at import by `tagverify/config.py`, from the environment and from `.env` (`.env.local` is
 also read, so an existing checkout keeps working). **Nothing raises on a missing value** — a
 missing `DATABASE_URL` degrades to a `/api/v1/health` response that reports the problem, rather
 than a process that refuses to boot. Monitoring you cannot reach is not monitoring.
@@ -292,7 +292,7 @@ independently, and only then are the verdicts collapsed: present beats uncertain
 and the highest-scoring frame inside the winning band supplies the evidence. Deciding first is
 what matters — the sigmoid floor is a per-frame veto, so ranking frames by raw score would let
 a vetoed 0.92 frame beat a genuine 0.60 one and reintroduce "a mountain reads as alcohol" one
-level up. See `dooh/analyze/aggregate.py`.
+level up. See `tagverify/analyze/aggregate.py`.
 
 **A frame we could not analyse fails the whole request.** There is no partial video result.
 Returning verdicts computed over four frames of six, with nothing saying so, is "we didn't
@@ -304,7 +304,7 @@ then a colour-aware dedupe, then a cap. `media.frames_considered` exceeding
 
 **A video is charged per frame.** `guard` charges one unit per request before the body is
 read, which is right for a still and wrong for a video: six frames is six times the model
-time. The difference is charged after the fact in `dooh/api/v1/analyze.py`, so a video cannot
+time. The difference is charged after the fact in `tagverify/api/v1/analyze.py`, so a video cannot
 be used as the cheap way to consume six times the capacity. A cache hit ran nothing and stays
 one unit.
 
@@ -315,4 +315,4 @@ the numbers that decide compliance verdicts; defaulting open would be the danger
 **Colour means a verdict.** Red, amber and green are reserved for present / uncertain / absent.
 The interface itself is monochrome, with a single azure used only for links and focus rings, so
 nothing in the chrome can be mistaken for a result. All colours and spacing come from the token
-block at the top of `dooh/static/css/app.css` — do not introduce literal values in templates.
+block at the top of `tagverify/static/css/app.css` — do not introduce literal values in templates.

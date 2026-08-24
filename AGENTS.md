@@ -9,14 +9,14 @@ Vercel or `npm` referenced anywhere, it is stale and should be fixed.
 
 ## Two environments, on purpose
 
-| | `dooh/` (web app) | `inference/` (model) |
+| | `tagverify/` (web app) | `inference/` (model) |
 |---|---|---|
 | venv | `.venv` at the repo root | `inference/.venv` |
 | deps | `pyproject.toml` | `inference/requirements.txt` |
 | deployed to | Docker / any host | a Hugging Face Space, via `git subtree push` |
 
 **Never add torch, transformers or gradio to `pyproject.toml`**, and never import
-`inference.detector` from `dooh/`. The split exists so that serving HTTP does not require
+`inference.detector` from `tagverify/`. The split exists so that serving HTTP does not require
 2GB of ML wheels. The one shared file is `inference/banding.py`, which imports nothing.
 
 `av` in `pyproject.toml` is not an exception to that rule. It is a codec binding for reading
@@ -27,6 +27,15 @@ receives a single still.
 `inference/` runs FLAT inside the Space (`import detector`) and as a package in this repo
 (`from inference.banding import ...`). That is why `detector.py` and `calibrate.py` use a
 try/except import shim. Do not "simplify" it away.
+
+The client that CALLS the model tier is `tagverify/scoring/client.py`. It used to be
+`dooh/inference/client.py`, which meant two things called `inference` at different levels
+meaning opposite ends of the same wire, one nested inside the other. Keep the two words apart:
+**`inference/` is the tier, `scoring/` is our client for it.** The web package is `tagverify`,
+not `dooh` — `dooh` names the whole domain, and three sibling projects live under `Dooh/`. The
+`dooh` CLI command, the `dooh_live_` key prefix and the `dooh_admin` cookie keep their names:
+the first is human-facing, and changing either of the others would invalidate every issued key
+and every open session.
 
 ## Rules that are load-bearing
 
@@ -47,7 +56,7 @@ try/except import shim. Do not "simplify" it away.
    tag's positives when nothing else in the pool describes the image, so the catalog doubles as
    the negative space (`detector.py` `_verdict`). Two fingerprints follow from this:
    `packs_version` covers the prompts and the scoring code (`inference/versioning.py`),
-   `decision_version` covers the rule and the thresholds (`dooh/tags/decide.py`). If a change
+   `decision_version` covers the rule and the thresholds (`tagverify/tags/decide.py`). If a change
    moves a NUMBER, it belongs in the first; if it changes how that number is READ, the second.
 7. **Never expose thresholds** through `/api/v1/tags`. `decision_version` is not an
    exception: it is a truncated one-way hash of them, published so a caller can key its
@@ -57,7 +66,7 @@ try/except import shim. Do not "simplify" it away.
    opening, and every mutating handler re-checks the session itself.
 10. **Video frames are decided individually, then collapsed.** Present beats uncertain beats
    absent. Never rank frames by raw score: the sigmoid floor is a per-frame veto, so a vetoed
-   0.92 frame would beat a genuine 0.60 one. The rule lives in `dooh/analyze/aggregate.py`
+   0.92 frame would beat a genuine 0.60 one. The rule lives in `tagverify/analyze/aggregate.py`
    and nowhere else.
 11. **A frame that fails fails the request.** No partial video verdicts, ever.
 12. **The media kind is sniffed from the bytes**, never from the field name, filename or
@@ -76,7 +85,7 @@ counterpart for video: if you change how frames combine, that one should fail.
 
 ## Frontend
 
-Hand-authored CSS in `dooh/static/css/`, Jinja2 templates, HTMX vendored in
-`dooh/static/js/`. There is no build step and no `package.json` — keep it that way. All
+Hand-authored CSS in `tagverify/static/css/`, Jinja2 templates, HTMX vendored in
+`tagverify/static/js/`. There is no build step and no `package.json` — keep it that way. All
 colours and spacing come from the token block at the top of `app.css`; do not introduce
 literal hex values in templates.
