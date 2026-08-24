@@ -36,7 +36,7 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import ROOT, needs_db, needs_inference
-from tests.videos import middle_scene_clip, neutral_image, truncated
+from tests.support.videos import middle_scene_clip, neutral_image, truncated
 
 EVAL = ROOT / "inference/eval"
 

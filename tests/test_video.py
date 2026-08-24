@@ -15,7 +15,7 @@ import pytest
 from PIL import Image
 
 from tagverify.analyze import intake, video
-from tests.videos import encode
+from tests.support.videos import encode
 
 ROOT_IMAGE = Path("inference/eval/alcohol/pos/Beer.jpg")
 

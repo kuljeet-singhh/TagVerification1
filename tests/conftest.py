@@ -100,12 +100,12 @@ def beer_video() -> bytes:
     A clip where the beer appears in ONE scene of three.
 
     It is the case the whole video path exists for: a first-frame check would miss it
-    entirely. The encoder lives in tests/videos.py — it used to be written out here, in
+    entirely. The encoder lives in tests/support/videos.py — it used to be written out here, in
     test_video.py and inline in test_api.py, three copies with different sizes.
     """
     from PIL import Image
 
-    from tests.videos import SIZE, middle_scene_clip, neutral_image
+    from tests.support.videos import SIZE, middle_scene_clip, neutral_image
 
     beer = Image.open(next((ROOT / "inference/eval/alcohol/pos").glob("*.jpg")))
     return middle_scene_clip(beer, neutral_image(), size=SIZE)

@@ -23,7 +23,9 @@ from pathlib import Path
 import av
 from PIL import Image
 
-ROOT = Path(__file__).resolve().parent.parent
+#: The repo root: this file is tests/support/videos.py, so that is three parents up. Keep it
+#: in step with tests/conftest.py's ROOT, which is one level shallower for the same reason.
+ROOT = Path(__file__).resolve().parent.parent.parent
 
 #: Small, because the sampler works on an 8x8 colour signature and the model resizes to 224
 #: anyway. Encoding at creative resolution would cost seconds per clip and prove nothing.
