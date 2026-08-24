@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ico %}
+{% set page = 'admin' %}
+{% block title %}Admin is not configured{% endblock %}
+
+{% block content %}
+<div class="auth-shell">
+  <div class="auth-card auth-card-wide card card-pad">
+    <div class="auth-icon auth-icon-warn">{{ ico.icon('lock', 18) }}</div>
+    <h1>Admin is not configured</h1>
+    <p class="small muted">
+      <code class="mono">ADMIN_PASSWORD</code> is unset, so there is nothing to authenticate
+      against.
+    </p>
+    <p class="small muted">
+      Access is <strong>refused</strong> rather than allowed, because these pages can mint API
+      keys and change the thresholds that decide compliance verdicts. Defaulting open would be
+      the dangerous failure mode.
+    </p>
+    <p class="small muted">Set it in your environment and restart:</p>
+    <pre class="literal">ADMIN_PASSWORD=&lt;a long random string&gt;</pre>
+  </div>
+</div>
+{% endblock %}

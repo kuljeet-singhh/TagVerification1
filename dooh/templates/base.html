@@ -1,0 +1,118 @@
+{% import "_icons.html" as ico %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{# Tells the browser to theme native controls, scrollbars and form widgets.
+   The previous app omitted this, which is why <select> menus and scrollbars
+   rendered light-on-dark. #}
+<meta name="color-scheme" content="light dark">
+<title>{% block title %}Tag Verification{% endblock %}</title>
+<meta name="description" content="Verify that a DOOH creative actually contains the content it is tagged with.">
+
+{# Blocking, and deliberately so: it must run before first paint or the page
+   flashes the wrong theme. It is the only inline script in the application. #}
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem("theme");
+    if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+  } catch (e) {}
+})();
+</script>
+
+<link rel="stylesheet" href="{{ asset('css/app.css') }}">
+<link rel="stylesheet" href="{{ asset('css/pages.css') }}">
+<link rel="icon" href="{{ asset('favicon.svg') }}" type="image/svg+xml">
+{% block head %}{% endblock %}
+</head>
+
+<body{% if csrf_token %} hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'{% endif %}>
+<a class="skip-link" href="#main">Skip to content</a>
+<div id="progress" aria-hidden="true"></div>
+
+{% set health_word = {'is-ok': 'Inference online',
+                      'is-warming': 'Inference waking',
+                      'is-down': 'Inference unreachable'}.get(health_class, 'Inference unknown') %}
+
+<div class="shell">
+  {# A persistent rail rather than a top nav. This is a tool people keep open,
+     and the rail gives the two build identifiers a permanent home: when a
+     score looks wrong, the pack fingerprint and the model are the first things
+     anyone needs, and in the previous layout they sat in a footer that was
+     below the fold on every page. #}
+  <aside class="rail">
+    <a class="brand" href="/">
+      <span class="brand-mark">{{ ico.icon('shield', 13) }}</span>
+      <span class="brand-text">
+        Tag Verification
+        <small>DOOH compliance</small>
+      </span>
+    </a>
+
+    <nav class="rail-nav" aria-label="Main">
+      <a href="/" {% if page == 'playground' %}aria-current="page"{% endif %}>
+        {{ ico.icon('scan') }} Playground
+      </a>
+      <a href="/docs" {% if page == 'docs' %}aria-current="page"{% endif %}>
+        {{ ico.icon('code') }} API reference
+      </a>
+      <a href="/admin" {% if page == 'admin' %}aria-current="page"{% endif %}>
+        {{ ico.icon('sliders') }} Admin
+      </a>
+    </nav>
+
+    <div class="rail-foot">
+      {% if packs_version or model %}
+        <dl class="rail-ids">
+          {% if packs_version %}
+            <div class="rail-id"><dt>pack</dt><dd title="{{ packs_version }}">{{ packs_version }}</dd></div>
+          {% endif %}
+          {% if model %}
+            <div class="rail-id"><dt>model</dt><dd title="{{ model }}">{{ model }}</dd></div>
+          {% endif %}
+        </dl>
+      {% endif %}
+
+      <div class="row gap-2">
+        <span class="rail-status">
+          <span class="status-dot {{ health_class | default('') }}"></span>
+          <a href="/api/v1/health">{{ health_word }}</a>
+        </span>
+        <span class="rail-controls push">
+          <button class="icon-btn" type="button" data-theme-toggle
+                  aria-label="Switch between light and dark theme">
+            <span class="icon-sun">{{ ico.icon('sun') }}</span>
+            <span class="icon-moon">{{ ico.icon('moon') }}</span>
+          </button>
+        </span>
+      </div>
+    </div>
+  </aside>
+
+  <div class="shell-main">
+    <main id="main">{% block content %}{% endblock %}</main>
+
+    {# Visible only below the rail breakpoint, where the rail collapses to a top
+       bar and drops the identifiers for width. They are never off the page. #}
+    <footer class="site-footer">
+      <div class="wrap wrap-wide">
+        {% if packs_version %}<span class="footer-id">packs {{ packs_version }}</span>{% endif %}
+        {% if model %}<span class="footer-id">{{ model }}</span>{% endif %}
+        <span class="push row gap-2">
+          <span class="status-dot {{ health_class | default('') }}"></span>
+          <a href="/api/v1/health">status</a>
+        </span>
+      </div>
+    </footer>
+  </div>
+</div>
+
+<div id="toasts" aria-live="polite" aria-atomic="false"></div>
+<p id="announcer" class="sr-only" aria-live="polite"></p>
+
+<script src="{{ asset('js/htmx.min.js') }}" defer></script>
+<script type="module" src="{{ asset('js/app.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

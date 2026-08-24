@@ -210,6 +210,26 @@
         "a lottery ticket",
         "dice being thrown on a casino table"
       ],
+      "//negatives": [
+        "The last four are not padding either, and they are the ones that matter for DOOH.",
+        "Measured: a portrait 'BIG SALE OFFER' poster — a model on flat orange under huge",
+        "display type — scored 0.6167 for this tag on 'a sports betting app on a phone",
+        "screen', which is PRESENT under threshold_high 0.55, and a real advertiser was",
+        "refused over it. Nothing in the pool described what every DOOH creative actually",
+        "is: a designed advertisement. The board games and machines above are all PHYSICAL",
+        "objects, so a bright rectangular panel covered in lettering had nowhere to land",
+        "except the betting-app prompt.",
+        "",
+        "RULE 1 in force: each mirrors a positive's composition rather than its subject.",
+        "'a sports betting app on a phone screen' now has 'a shopping app...' and 'a sale",
+        "advertisement on a phone screen' opposite it, and the two poster phrases cover the",
+        "designed-artwork case the whole catalog was missing.",
+        "",
+        "Result on the same poster: 0.6167 -> 0.0377, decided by the SCORE and not by the",
+        "sigmoid floor, which matters — the floor had been the only thing holding this back",
+        "and it was doing so by 0.0132 against 0.005. Real gambling is untouched: slot",
+        "machine 0.9964, casino chips 0.9996, roulette 0.9999. Guarded by smoke_test.py."
+      ],
       "negatives": [
         "a family playing a board game",
         "a children's card game",
@@ -217,7 +237,11 @@
         "an arcade video game machine",
         "a stock market chart",
         "a vending machine",
-        "a calculator"
+        "a calculator",
+        "a shopping app on a phone screen",
+        "a sale advertisement on a phone screen",
+        "an advertising poster with large bold text",
+        "a retail sale poster with big discount lettering"
       ],
       "detect_objects": ["poker chip", "slot machine", "playing cards", "dice"]
     },

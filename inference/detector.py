@@ -45,7 +45,6 @@ Shared distractors ("a plain empty background", ...) help with the same problem
 by giving irrelevant images somewhere for their probability mass to go.
 """
 
-import hashlib
 import json
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -53,6 +52,17 @@ from pathlib import Path
 import torch
 from PIL import Image
 from transformers import AutoModel, AutoProcessor
+
+# The banding rule is shared with the API tier and with calibrate.py -- see
+# banding.py for why it lives there and must not be re-implemented here.
+# Two import forms because this directory runs flat inside the Hugging Face
+# Space but is a package in the repo. Same shim style as _pooled() below.
+try:
+    from .banding import band_of, confidence_of  # packaged (web app)
+    from .versioning import scorer_version
+except ImportError:  # pragma: no cover - exercised only inside the Space
+    from banding import band_of, confidence_of  # flat (HF Space)
+    from versioning import scorer_version
 
 MODEL_ID = "google/siglip2-base-patch16-224"
 
@@ -152,15 +162,18 @@ class Detector:
     def __init__(self, packs_path: str | Path = "packs.json", grid: int = 3):
         self.grid = grid
 
-        raw_packs = Path(packs_path).read_text()
-        config = json.loads(raw_packs)
+        config = json.loads(Path(packs_path).read_text())
 
         self.model_id = MODEL_ID
-        # Fingerprint of the pack file. Any edit to a prompt or threshold changes
-        # this, so a stored verdict can always be traced back to the exact
-        # configuration that produced it. Thresholds change verdicts, so this
-        # needs to be auditable.
-        self.packs_version = hashlib.sha256(raw_packs.encode()).hexdigest()[:12]
+        # Fingerprint of the prompts AND of this file. Any edit to a prompt, a threshold or
+        # the scoring code changes it, so a stored score can always be traced back to the
+        # exact configuration that produced it -- and, because caches key on it, a scoring
+        # change cannot leave stale numbers behind claiming to be current.
+        #
+        # It covers detector.py because it has to: cross-tag competition (see _verdict) moved
+        # every score in the product without touching packs.json. The rule lives in
+        # versioning.py and nowhere else; dooh/cli.py used to keep its own copy.
+        self.packs_version = scorer_version(packs_path, __file__)
 
         self.template: str = config["prompt_template"]
         self.defaults: dict = config["defaults"]
@@ -192,6 +205,18 @@ class Detector:
                 "pos": [self._row(p) for p in pack["positives"]],
                 "neg": [self._row(p) for p in pack["negatives"]],
             }
+
+        # Every OTHER tag's positives, per tag -- the competition pool's open-set half.
+        # See _verdict for why. Built once: rows are interned, so this is index arithmetic,
+        # and it must be derived from the whole pack rather than from a request's tag list.
+        every_positive = {row for slug in self.packs for row in self.index[slug]["pos"]}
+        self._rival_rows: dict[str, list[int]] = {}
+        for slug in self.packs:
+            spoken_for = set(self.index[slug]["pos"]) | set(self.index[slug]["neg"])
+            spoken_for.update(self._distractor_rows)
+            # Sorted for determinism; a set's order would make packs_version honest and the
+            # scores subtly irreproducible, which is the worst possible combination.
+            self._rival_rows[slug] = sorted(every_positive - spoken_for)
 
         self.text_embeds = self._encode_texts(self._prompt_rows)
         print(
@@ -280,10 +305,34 @@ class Detector:
     ) -> TagVerdict:
         pos = self.index[slug]["pos"]
         neg = self.index[slug]["neg"]
-        columns = pos + neg + self._distractor_rows
 
-        # Restrict to this tag's competition pool, then softmax across it. Every
-        # crop is scored independently, hence dim=-1.
+        # The competition pool: this tag's positives, its hand-written hard negatives, the
+        # shared distractors -- and EVERY OTHER TAG'S POSITIVES.
+        #
+        # WHY THE OTHER TAGS ARE IN THE ROOM
+        # ----------------------------------
+        # Softmax must sum to 1, so a pool that cannot describe the image hands its mass to
+        # this tag's positives by default. That is not a detection, it is an empty room. A
+        # real gym poster scored 0.97 for `gambling` on "a sports betting app on a phone
+        # screen" -- not because it looked like betting, but because gambling's negatives are
+        # all board games and machines and the six shared distractors are all textureless
+        # backdrops, so nothing in the pool described a designed poster. Meanwhile
+        # `gym_fitness` -- "a muscular person working out" -- sat in the same catalog, already
+        # encoded in the same table, and was never allowed to compete. Adding it drops that
+        # score to 0.06.
+        #
+        # This is the same argument the module header makes for hard negatives ("a juice
+        # bottle only loses to whiskey if juice is in the running"), applied across the
+        # catalog instead of within one pack. The catalog is now doing double duty: it is the
+        # tag list AND the negative space, so its coverage decides how well this works. That
+        # is a second reason to keep it broad -- see the "SEED CATALOG" note in packs.json.
+        #
+        # Costs nothing: `logits` above already covers every prompt, so this only widens a
+        # column slice. Deduped in __init__, because rows are interned and a phrase appearing
+        # twice would be counted twice in the denominator.
+        columns = pos + neg + self._distractor_rows + self._rival_rows[slug]
+
+        # Softmax across the pool. Every crop is scored independently, hence dim=-1.
         pool = logits[:, columns]  # (n_crops, n_pool)
         probs = pool.softmax(dim=-1)
 
@@ -305,17 +354,9 @@ class Detector:
 
         low, high, floor = self.thresholds(slug)
 
-        # Order matters: the floor is a veto and is checked FIRST. A high softmax
-        # score on an image where nothing actually resembles the tag is an
-        # artifact of the pool, not a detection.
-        if sigmoid < floor:
-            band, present, decided_by = "absent", False, "sigmoid_floor"
-        elif score >= high:
-            band, present, decided_by = "present", True, "siglip"
-        elif score <= low:
-            band, present, decided_by = "absent", False, "siglip"
-        else:
-            band, present, decided_by = "uncertain", None, "siglip"
+        # The banding rule (including why the sigmoid floor is a veto checked
+        # first) lives in banding.py, shared with calibrate.py and the API tier.
+        band, present, decided_by = band_of(score, sigmoid, low, high, floor)
 
         return TagVerdict(
             tag=slug,
@@ -323,23 +364,8 @@ class Detector:
             score=round(score, 4),
             sigmoid=round(sigmoid, 4),
             band=band,
-            confidence=self._confidence(score, low, high, band),
+            confidence=confidence_of(score, low, high, band),
             decided_by=decided_by,
             top_phrase=top_phrase,
             crop=crops[best][1],
         )
-
-    @staticmethod
-    def _confidence(score: float, low: float, high: float, band: str) -> str:
-        """
-        How far past the threshold did we land? Callers use this to decide
-        whether a verdict is worth a human review.
-        """
-        if band == "uncertain":
-            return "low"
-        margin = score - high if band == "present" else low - score
-        if margin >= 0.20:
-            return "high"
-        if margin >= 0.08:
-            return "medium"
-        return "low"

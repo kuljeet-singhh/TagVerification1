@@ -1,0 +1,45 @@
+{% import "_icons.html" as ico %}
+{# The warming state polls itself back to health rather than telling the user to
+   reload. A free Space sleeps after 48h idle and takes 30-60s to load ~400MB of
+   weights — a known, self-resolving condition, so asking a human to sit there
+   pressing refresh was making them do the computer's job. #}
+
+<div id="catalog-status" class="callout callout-warn stack gap-3"
+     {% if warming %}
+     hx-get="/ui/catalog"
+     hx-trigger="load delay:8s, every 8s"
+     hx-target="#results"
+     hx-swap="innerHTML"
+     {% endif %}>
+  <div class="row gap-2">
+    {{ ico.icon('refresh', 16) }}
+    <strong>
+      {% if warming %}The inference service is waking up{% else %}
+      Cannot reach the inference service{% endif %}
+    </strong>
+  </div>
+
+  <p class="small">
+    {% if warming %}
+      It sleeps after 48 hours idle and takes 30&ndash;60 seconds to load the model.
+      This page is checking every 8 seconds and will fill in on its own.
+    {% else %}
+      {{ error }}
+    {% endif %}
+  </p>
+
+  {% if local_hint %}
+    <p class="xs">
+      Running locally? Start the model with
+      <code class="mono">cd inference &amp;&amp; ./.venv/bin/python app.py</code>
+      and set <code class="mono">INFERENCE_URL=http://127.0.0.1:7860</code>.
+    </p>
+  {% endif %}
+
+  <div>
+    <button class="btn btn-outline btn-sm"
+            hx-get="/ui/catalog" hx-target="#results" hx-swap="innerHTML">
+      {{ ico.icon('refresh', 13) }} Check now
+    </button>
+  </div>
+</div>

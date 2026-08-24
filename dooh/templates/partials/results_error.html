@@ -1,0 +1,23 @@
+{% import "_icons.html" as ico %}
+<div class="callout callout-warn stack gap-3 fade-in">
+  <div class="row gap-2">
+    {{ ico.icon('alert', 16) }}
+    <strong>Could not analyse that</strong>
+  </div>
+  <p class="small">{{ message }}</p>
+  {% if retryable %}
+    <div>
+      {# hx-include re-sends the already-downscaled file, so a retry costs no
+         re-encoding and the user does not have to pick the image again. #}
+      <button class="btn btn-outline btn-sm"
+              hx-post="/ui/analyze"
+              hx-include="#analyze-form"
+              hx-encoding="multipart/form-data"
+              hx-target="#results"
+              hx-swap="innerHTML settle:120ms"
+              hx-indicator="#analyze-form">
+        {{ ico.icon('refresh', 13) }} Retry
+      </button>
+    </div>
+  {% endif %}
+</div>

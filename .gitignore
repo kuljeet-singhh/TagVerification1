@@ -1,41 +1,37 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
 
-# dependencies
-/node_modules
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
-# testing
-/coverage
+# env files — never commit. See .env.example for the key names.
+.env*
+!.env.example
 
-# next.js
-/.next/
-/out/
+# Wikipedia images smoke_test.py caches between runs. Created on first
+# `make inference-smoke`; safe to delete, never worth committing.
+inference/.testimages/
 
-# production
-/build
+# The labelled eval set, and the raw score matrix a sweep produces from it.
+#
+# Same reasoning as .testimages/, at twenty times the size: ~470 regenerable Wikipedia
+# photos across 20 tags is tens of megabytes of binary that `fetch_demo_eval.py` rebuilds
+# on demand. calibration.json is deliberately NOT ignored — that one is small, is the
+# artifact `dooh apply-calibration` reads, and is meant to be reviewable in a diff.
+#
+# Real creatives dropped in here to replace the demo set are ignored for a second reason:
+# they are advertiser material and do not belong in a git history.
+inference/eval/
+inference/sweep.json
 
 # misc
 .DS_Store
 *.pem
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-
-# env files (can opt-in for committing if needed)
-.env*
-
-# vercel
-.vercel
-
-# typescript
-*.tsbuildinfo
-next-env.d.ts

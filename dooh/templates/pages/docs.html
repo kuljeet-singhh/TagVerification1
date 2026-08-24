@@ -1,0 +1,424 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ico %}
+{% set page = 'docs' %}
+{% block title %}API reference · Tag Verification{% endblock %}
+
+{# A code block with a language bar. The bar earns its row: it labels what you
+   are looking at and gives the copy button a permanent home, instead of the
+   old hover-reveal button that was invisible on touch. #}
+{% macro code(id, lang, text) %}
+<div class="code-block">
+  <div class="code-bar">
+    <span>{{ lang }}</span>
+    <button class="copy" type="button" data-copy="#{{ id }}">Copy</button>
+  </div>
+  <pre id="{{ id }}"><code>{{ text }}</code></pre>
+</div>
+{% endmacro %}
+
+{% macro heading(id, text) %}
+<div class="docs-h">
+  <h2 id="{{ id }}">{{ text }}</h2>
+  <a class="anchor" href="#{{ id }}" aria-label="Link to this section">#</a>
+</div>
+{% endmacro %}
+
+{% block content %}
+<div class="wrap wrap-prose">
+  <div class="docs-grid">
+    <div class="docs-body">
+      <div class="page-head docs-page-head">
+        <span class="eyebrow">API reference</span>
+        <h1>Tag Verification API</h1>
+        <p>
+          REST over HTTPS, JSON or multipart in, JSON out. One endpoint does the work; the
+          other three tell you what the service knows and how you are doing against your
+          limit.
+        </p>
+      </div>
+
+      {# This callout used to sit third on the page, below the fold. It is the
+         highest-consequence content here — misreading either field is how a
+         non-compliant creative reaches a screen — so it goes first. #}
+      <section id="two-fields">
+        <div class="callout callout-warn">
+          <h3>Two fields you must not ignore</h3>
+          <ul class="callout-list">
+            <li>
+              <code>present: null</code> means <strong>uncertain</strong>, not false. The
+              score fell between the thresholds. Treat it as &ldquo;needs a human&rdquo; —
+              reading it as absent is how a non-compliant creative slips through.
+            </li>
+            <li>
+              <code>calibrated: false</code> means that tag&rsquo;s thresholds were never
+              measured against labelled images. The verdict is an educated guess, and
+              presenting it as a measurement is the failure mode this service exists to
+              prevent.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="authentication">
+        {{ heading('authentication', 'Authentication') }}
+        <p>
+          Send your key in the <code>x-api-key</code> header;
+          <code>Authorization: Bearer &hellip;</code> also works. Keys are issued in
+          <a href="/admin">Admin</a> and shown once — only a hash is stored, so a lost key
+          cannot be recovered, only replaced.
+        </p>
+        <p>
+          An unknown key and a revoked key return byte-identical responses. That is
+          deliberate: distinguishing them would tell an attacker which of their guesses had
+          once been real.
+        </p>
+      </section>
+
+      <section id="analyze">
+        {{ heading('analyze', 'Analyse a creative') }}
+
+        <div class="endpoint">
+          <span class="method">POST</span>
+          <span class="endpoint-path">/api/v1/analyze</span>
+          <span class="note">key required</span>
+        </div>
+
+        <p>
+          Accepts multipart, or JSON with <code>media_base64</code> or <code>media_url</code>.
+          Downscale images to 768px on the longest edge before sending — the model works at
+          224px, so nothing is lost and requests stay small. If you don&rsquo;t, we do it for
+          you.
+        </p>
+
+        <p>
+          <strong>Images and video use the same endpoint.</strong> Which one you sent is
+          determined from the bytes, not from the field name, the filename or the
+          <code>Content-Type</code> — so renaming a file changes nothing about which checks
+          run. A video is sampled into up to {{ max_frames }} frames, each scored separately;
+          a tag is <code>present</code> if it is present in <em>any</em> frame, and
+          <code>null</code> if any frame was uncertain and none was present.
+        </p>
+
+        <h3>Request fields</h3>
+        <dl class="fields">
+          <dt>media</dt>
+          <dd>Multipart file part. Any image Pillow can decode, up to {{ max_image_mb }}MB; or
+              an MP4, MOV or WebM video up to {{ max_video_mb }}MB and
+              {{ max_video_seconds }}s. <code>image</code> is accepted as an alias, and also
+              takes either kind.</dd>
+
+          <dt>media_base64</dt>
+          <dd>JSON alternative to <code>media</code>. A bare base64 string; a
+              <code>data:</code> prefix is accepted and stripped.
+              <code>image_base64</code> is accepted as an alias.</dd>
+
+          <dt>media_url</dt>
+          <dd>JSON alternative again. Must resolve to a public address — private, loopback and
+              link-local targets are refused, and redirects are not followed.
+              <code>image_url</code> is accepted as an alias.</dd>
+
+          <dt>tags<span class="req">required</span></dt>
+          <dd>One or more known slugs. Repeat the field in multipart, or send an array in
+              JSON. An unrecognised slug fails the <em>whole</em> request; see
+              <a href="#errors">Errors</a>.</dd>
+        </dl>
+
+        <h3>Examples</h3>
+        <div class="code-tabs segmented" role="tablist" aria-label="Example language">
+          <button role="tab" aria-selected="true"  data-lang="curl">curl</button>
+          <button role="tab" aria-selected="false" data-lang="python">Python</button>
+          <button role="tab" aria-selected="false" data-lang="js">JavaScript</button>
+        </div>
+
+        <div data-lang-panel="curl">
+{{ code('ex-curl', 'shell', 'curl -X POST https://your-app/api/v1/analyze \\
+  -H "x-api-key: dooh_live_..." \\
+  -F "image=@creative.jpg" \\
+  -F "tags=alcohol" -F "tags=gym_fitness"') }}
+        </div>
+
+        <div data-lang-panel="python" hidden>
+{{ code('ex-python', 'python', 'import httpx
+
+with open("creative.jpg", "rb") as fh:
+    response = httpx.post(
+        "https://your-app/api/v1/analyze",
+        headers={"x-api-key": "dooh_live_..."},
+        files={"image": fh},
+        data={"tags": ["alcohol", "gym_fitness"]},
+    )
+
+for verdict in response.json()["results"]:
+    if verdict["present"] is None:
+        print(f"{verdict[\'tag\']}: needs a human")   # NOT absent
+    elif verdict["present"]:
+        print(f"{verdict[\'tag\']}: present")') }}
+        </div>
+
+        <div data-lang-panel="js" hidden>
+{{ code('ex-js', 'javascript', 'const body = new FormData();
+body.append("image", file);
+body.append("tags", "alcohol");
+body.append("tags", "gym_fitness");
+
+const response = await fetch("https://your-app/api/v1/analyze", {
+  method: "POST",
+  headers: { "x-api-key": "dooh_live_..." },
+  body,
+});
+
+const { results } = await response.json();
+
+for (const verdict of results) {
+  // null is a third state, not a falsy false.
+  if (verdict.present === null) needsReview(verdict.tag);
+}') }}
+        </div>
+
+        <h3>Response</h3>
+{{ code('ex-response', 'json', '{
+  "request_id": "5f1c...",
+  "image_hash": "9a3f...",          // sha256 of what you sent; never stored, either kind
+  "image_bytes": 152341,
+  "model": "' ~ (model or 'google/siglip2-base-patch16-224') ~ '",
+  "packs_version": "' ~ (packs_version or '1a2db18ba940') ~ '",
+  "cached": false,
+  "latency_ms": 612,
+  "results": [{
+    "tag": "alcohol",
+    "present": true,                // true | false | null
+    "score": 0.977,
+    "confidence": "high",           // high | medium | low
+    "decided_by": "siglip",         // siglip | sigmoid_floor
+    "calibrated": false,
+    "evidence": {
+      "top_phrase": "a glass of beer with foam",
+      "crop": [0.0, 0.5, 0.5, 1.0], // where it was found, as 0-1 fractions
+      "sigmoid": 0.028
+    }
+  }],
+  "uncalibrated_tags": ["alcohol"]  // key omitted entirely when empty
+}') }}
+
+        <h3>Response &mdash; video</h3>
+        <p>
+          Identical, plus two additions. An image response never carries either, so the
+          presence of <code>media</code> is itself how you know frames were involved.
+        </p>
+{{ code('ex-response-video', 'json', '{
+  "image_hash": "7c02...",          // sha256 of the video file
+  "image_bytes": 2418355,
+  "cached": false,
+  "latency_ms": 4180,
+  "results": [{
+    "tag": "alcohol",
+    "present": true,
+    "score": 0.984,
+    "confidence": "high",
+    "decided_by": "siglip",
+    "calibrated": false,
+    "evidence": {
+      "top_phrase": "a glass of beer with foam",
+      "crop": [0.0, 0.5, 0.5, 1.0],
+      "sigmoid": 0.031,
+      "frame": { "index": 2, "timestamp_s": 2.0 }   // WHICH frame decided this
+    }
+  }],
+  "media": {
+    "kind": "video",
+    "duration_s": 9.6,
+    "frames_analyzed": 4,           // frames actually scored
+    "frames_considered": 4          // distinct scenes found; higher means partial coverage
+  }
+}') }}
+
+        <h3>Response fields</h3>
+        <dl class="fields">
+          <dt>present</dt>
+          <dd><code>true</code>, <code>false</code>, or <code>null</code> for uncertain.
+              Three states, always. For a video this is decided across every sampled frame:
+              <code>true</code> if any frame contains the tag, <code>null</code> if any frame
+              was uncertain and none was present, <code>false</code> only when every frame was
+              decided absent.</dd>
+
+          <dt>evidence.frame</dt>
+          <dd>Video only. <code>index</code> and <code>timestamp_s</code> of the frame this
+              verdict came from — the score, crop, phrase and sigmoid all describe that one
+              frame. Absent for images.</dd>
+
+          <dt>media.frames_considered</dt>
+          <dd>Video only. Distinct scenes the sampler found. When this exceeds
+              <code>frames_analyzed</code> the per-request cap truncated, so coverage is
+              partial &mdash; stated rather than left to be inferred.</dd>
+
+          <dt>score</dt>
+          <dd>Softmax mass on the tag&rsquo;s positive prompts, 0&ndash;1. This is the number
+              the thresholds are compared against.</dd>
+
+          <dt>decided_by</dt>
+          <dd><code>siglip</code> for a normal threshold decision, <code>sigmoid_floor</code>
+              when the absolute-resemblance veto fired — see
+              <a href="#decisions">How a verdict is decided</a>.</dd>
+
+          <dt>calibrated</dt>
+          <dd>Whether this tag&rsquo;s thresholds were measured against labelled images.
+              <code>false</code> means the verdict is a guess.</dd>
+
+          <dt>evidence.crop</dt>
+          <dd><code>[x0, y0, x1, y1]</code> as fractions of width and height — the window that
+              scored highest, suitable for drawing a box on the original.</dd>
+
+          <dt>evidence.sigmoid</dt>
+          <dd>Absolute resemblance to the tag, independent of the comparison pool. Only
+              decisive when it falls below the floor.</dd>
+
+          <dt>cached</dt>
+          <dd>Whether the raw scores came from the cache. Thresholds are re-applied on every
+              read, so a cached response still reflects the current thresholds.</dd>
+        </dl>
+
+        <p>
+          Successful responses carry <code>X-RateLimit-Limit</code> and
+          <code>X-RateLimit-Remaining</code>.
+        </p>
+      </section>
+
+      <section id="decisions">
+        {{ heading('decisions', 'How a verdict is decided') }}
+        <p>
+          Each tag has a pool of positive phrases, hand-written hard negatives, and shared
+          distractors. A softmax across that pool answers the <em>relative</em> question —
+          which of these best describes the image — and <code>score</code> is the probability
+          mass that landed on the positives.
+        </p>
+        <p>
+          A sigmoid on the positives alone answers the <em>absolute</em> question: does this
+          image resemble the tag at all? That is checked <strong>first</strong>, as a veto.
+          Softmax must sum to 1, so a photo of a mountain can hand half its mass to
+          &ldquo;a glass of beer&rdquo; purely by beating equally-irrelevant options. When
+          the veto fires, <code>decided_by</code> is <code>sigmoid_floor</code>.
+        </p>
+        <p>
+          Otherwise the bands are inclusive at both edges:
+        </p>
+        <dl class="fields">
+          <dt>present</dt>
+          <dd><code>score &ge; threshold_high</code></dd>
+          <dt>absent</dt>
+          <dd><code>score &le; threshold_low</code></dd>
+          <dt>null</dt>
+          <dd>anything between the two — uncertain, and yours to escalate</dd>
+        </dl>
+      </section>
+
+      <section id="calibration">
+        {{ heading('calibration', 'Calibration') }}
+        <p>
+          Thresholds are per-tag and live in the database, so they can be retuned without
+          redeploying the model. A tag is <code>calibrated: true</code> only after those
+          numbers were measured against labelled images — at least eight per class. Until
+          then the thresholds are the provisional guesses shipped in the prompt pack, and the
+          field says so.
+        </p>
+        <p>
+          <code>packs_version</code> fingerprints the prompt pack. If a threshold was
+          calibrated against a different pack than the one currently serving, the threshold is
+          still applied — it is the best available — but <code>calibrated</code> reverts to
+          <code>false</code>, because it no longer describes the scores being produced.
+        </p>
+      </section>
+
+      <section id="other">
+        {{ heading('other', 'Other endpoints') }}
+
+        <div class="endpoint">
+          <span class="method method-get">GET</span>
+          <span class="endpoint-path">/api/v1/tags</span>
+          <span class="note">key required</span>
+        </div>
+        <p>
+          The tag catalog, with a <code>calibrated</code> flag per tag. Thresholds themselves
+          are never exposed here.
+        </p>
+
+        <div class="endpoint">
+          <span class="method method-get">GET</span>
+          <span class="endpoint-path">/api/v1/usage</span>
+          <span class="note">key required</span>
+        </div>
+        <p>This key&rsquo;s traffic today, and its per-minute limit.</p>
+
+        <div class="endpoint">
+          <span class="method method-get">GET</span>
+          <span class="endpoint-path">/api/v1/health</span>
+          <span class="note">no key</span>
+        </div>
+        <p>
+          Database and inference status, reported separately. Always returns 200 with the
+          status in the body — so a monitor can treat any non-200 as &ldquo;the app itself is
+          down&rdquo; rather than having to parse degradation out of a status code.
+        </p>
+      </section>
+
+      <section id="errors">
+        {{ heading('errors', 'Errors') }}
+        <p>
+          Every failure returns <code>{ "error": "CODE", "message": "&hellip;" }</code>, so you
+          can branch on the code rather than matching prose.
+        </p>
+        <div class="card table-scroll">
+          <table class="data">
+            <thead>
+              <tr><th>Code</th><th>Status</th><th>Meaning</th></tr>
+            </thead>
+            <tbody>
+              {% for code_, status, meaning in errors %}
+                <tr>
+                  <td class="mono xs">{{ code_ }}</td>
+                  <td class="tnum">{{ status }}</td>
+                  <td class="muted small">{{ meaning }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="errors-note">
+          <code>UNKNOWN_TAG</code> is an error by design. If you misspell a tag we refuse the
+          whole request and echo the valid list, because &ldquo;we didn&rsquo;t check&rdquo;
+          and &ldquo;we checked and it is clean&rdquo; must never look alike.
+        </p>
+      </section>
+    </div>
+
+    <nav class="docs-toc" aria-label="On this page">
+      <p class="eyebrow docs-toc-head">On this page</p>
+      <ul>
+        <li><a href="#two-fields">Two fields you must not ignore</a></li>
+        <li><a href="#authentication">Authentication</a></li>
+        <li><a href="#analyze">Analyse a creative</a></li>
+        <li><a href="#decisions">How a verdict is decided</a></li>
+        <li><a href="#calibration">Calibration</a></li>
+        <li><a href="#other">Other endpoints</a></li>
+        <li><a href="#errors">Errors</a></li>
+      </ul>
+      <div class="stack gap-2 docs-toc-cta">
+        <a class="btn btn-outline btn-sm" href="/admin">{{ ico.icon('key', 13) }} Get a key</a>
+      </div>
+    </nav>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll("[data-lang]").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll("[data-lang]").forEach((t) =>
+      t.setAttribute("aria-selected", String(t === tab)));
+    document.querySelectorAll("[data-lang-panel]").forEach((panel) => {
+      panel.hidden = panel.dataset.langPanel !== tab.dataset.lang;
+    });
+  });
+});
+</script>
+{% endblock %}

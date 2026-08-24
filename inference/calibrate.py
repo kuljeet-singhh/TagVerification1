@@ -31,7 +31,7 @@ mislabel.
 WHY THIS WRITES JSON INSTEAD OF THE DATABASE
 --------------------------------------------------------------------------
 This script runs on your machine and emits `calibration.json`. A separate
-TypeScript step (`npm run calibrate:apply`) loads that into Postgres.
+`dooh apply-calibration` loads that into Postgres.
 
 That split is deliberate. This file lives in the directory that gets deployed to
 a Hugging Face Space, and giving the Space a DATABASE_URL would put production
@@ -53,6 +53,13 @@ from pathlib import Path
 from PIL import Image
 
 from detector import Detector
+
+# The banding rule, shared with detector.py and the API tier. Calibration must
+# evaluate candidate thresholds with the exact function production serves with.
+try:
+    from .banding import band_of  # packaged
+except ImportError:  # pragma: no cover - the normal path for this CLI script
+    from banding import band_of  # flat
 
 EVAL_DIR = Path("eval")
 OUT_FILE = Path("calibration.json")
@@ -229,17 +236,10 @@ def score_images(detector: Detector, slug: str, buckets: dict[bool, list[Path]])
 def evaluate(scored: list[Scored], low: float, high: float, floor: float) -> Outcome:
     out = Outcome(low=low, high=high, floor=floor)
     for item in scored:
-        # Same order of checks as production (lib/tags/decide.ts): the floor is a
-        # veto evaluated first. Calibrating against different logic than we serve
-        # would make the measured numbers describe nothing.
-        if item.sigmoid < floor:
-            predicted: bool | None = False
-        elif item.score >= high:
-            predicted = True
-        elif item.score <= low:
-            predicted = False
-        else:
-            predicted = None
+        # The SAME function production serves with (banding.py), not a copy of it.
+        # Calibrating against different logic than we serve would make the measured
+        # numbers describe nothing.
+        _band, predicted, _decided_by = band_of(item.score, item.sigmoid, low, high, floor)
 
         if predicted is None:
             out.uncertain += 1
@@ -526,7 +526,7 @@ def main() -> int:
 
     Path(args.out).write_text(json.dumps(payload, indent=2) + "\n")
     print(f"wrote {args.out}")
-    print("\nApply it to the database with:\n    npm run calibrate:apply")
+    print("\nApply it to the database with:\n    dooh apply-calibration")
 
     failed = [r for r in reports if not r.calibrated]
     if failed:

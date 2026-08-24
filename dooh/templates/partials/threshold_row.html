@@ -1,0 +1,66 @@
+{# One threshold row. Also the swap target for its own save, so a save repaints
+   this row alone — the old build showed one shared status message at the top of
+   a 20-row table (invisible when editing row 18) and disabled all 20 buttons. #}
+
+<form id="thr-{{ row.slug }}"
+      data-threshold-row
+      class="{{ 'thr-saved' if saved_slug == row.slug else '' }}"
+      hx-post="/admin/thresholds/{{ row.slug }}"
+      hx-target="#thr-{{ row.slug }}"
+      hx-swap="outerHTML settle:200ms"
+      hx-disabled-elt="find button">
+
+  <div class="c c-slug"><span class="thr-slug">{{ row.slug }}</span></div>
+
+  <div class="c c-preview">
+    {# The three numbers, drawn. Makes an inverted low > high obvious on sight
+       and teaches what each field does. #}
+    <div class="ruler" style="margin:0" aria-hidden="true">
+      <span class="ruler-seg ruler-absent"    style="left:0;width:{{ (row.threshold_low * 100) | round(2) }}%"></span>
+      <span class="ruler-seg ruler-uncertain" style="left:{{ (row.threshold_low * 100) | round(2) }}%;width:{{ ((row.threshold_high - row.threshold_low) * 100) | round(2) }}%"></span>
+      <span class="ruler-seg ruler-present"   style="left:{{ (row.threshold_high * 100) | round(2) }}%;width:{{ ((1 - row.threshold_high) * 100) | round(2) }}%"></span>
+    </div>
+  </div>
+
+  <div class="c">
+    <label class="sr-only" for="low-{{ row.slug }}">{{ row.slug }} low threshold</label>
+    <input class="input tnum" id="low-{{ row.slug }}" name="low" type="number"
+           value="{{ '%.4f' | format(row.threshold_low) }}"
+           step="0.005" min="0" max="1" inputmode="decimal" required>
+  </div>
+  <div class="c">
+    <label class="sr-only" for="high-{{ row.slug }}">{{ row.slug }} high threshold</label>
+    <input class="input tnum" id="high-{{ row.slug }}" name="high" type="number"
+           value="{{ '%.4f' | format(row.threshold_high) }}"
+           step="0.005" min="0" max="1" inputmode="decimal" required>
+  </div>
+  <div class="c">
+    <label class="sr-only" for="floor-{{ row.slug }}">{{ row.slug }} sigmoid floor</label>
+    <input class="input tnum" id="floor-{{ row.slug }}" name="floor" type="number"
+           value="{{ '%.4f' | format(row.sigmoid_floor) }}"
+           step="0.001" min="0" max="1" inputmode="decimal" required>
+  </div>
+
+  <div class="c c-status">
+    {% if row.calibrated %}
+      <span class="chip chip-absent">
+        calibrated · P {{ row.precision | percent }} R {{ row.recall | percent }}
+      </span>
+    {% else %}
+      <span class="chip chip-warn">uncalibrated</span>
+    {% endif %}
+  </div>
+
+  <div class="c">
+    <button class="btn btn-outline btn-sm" type="submit">
+      <span class="when-idle">Save</span>
+      <span class="when-busy"><span class="spinner"></span></span>
+    </button>
+  </div>
+
+  {% if row_error %}
+    <div class="c" style="grid-column:1/-1">
+      <p class="small" role="alert" style="color:var(--present-fg)">{{ row_error }}</p>
+    </div>
+  {% endif %}
+</form>

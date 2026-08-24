@@ -1,0 +1,98 @@
+{% import "_icons.html" as ico %}
+<div id="keys-panel" class="stack gap-4">
+
+  {# The one-time plaintext. Masked by default with an explicit Reveal: the old
+     build printed a live key at 12px on screen with no way to hide it, which is
+     a real shoulder-surfing problem in a shared office. #}
+  {% if new_key %}
+    <div class="callout callout-ok">
+      <h3>Key created for &ldquo;{{ new_key.name }}&rdquo;</h3>
+      <p class="small">
+        This is the only time it can be shown &mdash; only a hash is stored, so it cannot be
+        recovered later, only replaced.
+      </p>
+      <div class="key-reveal">
+        <code id="new-key-value" data-secret="{{ new_key.plaintext }}">
+          dooh_live_{{ '•' * 32 }}
+        </code>
+        <button class="btn btn-outline btn-sm" type="button" id="reveal-key">
+          {{ ico.icon('eye', 13) }} Reveal
+        </button>
+        <button class="btn btn-outline btn-sm" type="button"
+                data-copy-text="{{ new_key.plaintext }}">Copy</button>
+      </div>
+      <div style="margin-top:10px">
+        <button class="btn btn-ghost btn-sm" type="button"
+                onclick="this.closest('.callout').remove()">I&rsquo;ve saved it</button>
+      </div>
+    </div>
+    <script>
+      document.getElementById("reveal-key")?.addEventListener("click", (event) => {
+        const node = document.getElementById("new-key-value");
+        node.textContent = node.dataset.secret;
+        event.currentTarget.remove();
+      }, { once: true });
+    </script>
+  {% endif %}
+
+  <form class="card card-pad stack gap-3"
+        hx-post="/admin/keys"
+        hx-target="#keys-panel"
+        hx-swap="outerHTML"
+        hx-disabled-elt="find button">
+    <h3>Create a key</h3>
+    <div class="row gap-3 wrap-row" style="align-items:flex-end">
+      <div class="field" style="flex:1;min-width:200px">
+        <label for="key-name">Name</label>
+        <input class="input" id="key-name" name="name" required maxlength="80"
+               placeholder="Client or project" autocomplete="off">
+      </div>
+      <div class="field" style="width:130px">
+        <label for="key-limit">Requests / min</label>
+        <input class="input tnum" id="key-limit" name="rate_limit" type="number"
+               value="60" min="1" max="10000" inputmode="numeric">
+      </div>
+      <button class="btn btn-primary" type="submit">
+        <span class="when-idle">Create key</span>
+        <span class="when-busy"><span class="spinner"></span>&nbsp;Creating…</span>
+      </button>
+    </div>
+    {% if key_error %}<p class="small" role="alert" style="color:var(--present-fg)">{{ key_error }}</p>{% endif %}
+  </form>
+
+  <div class="card table-scroll">
+    <table class="data">
+      <thead>
+        <tr>
+          <th>Name</th><th>Key</th><th>Limit</th><th>Last used</th><th>Status</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for key in keys %}
+          <tr id="key-{{ key.id }}" {% if key.revoked_at %}class="is-revoked"{% endif %}>
+            <td>{{ key.name }}</td>
+            <td class="mono xs">dooh_live_{{ key.key_prefix }}…</td>
+            <td class="tnum">{{ key.rate_limit_per_min }}/min</td>
+            <td class="small muted">{{ key.last_used_at | relative_time }}</td>
+            <td>
+              <span class="row gap-2 small">
+                <span class="status-dot {{ 'is-down' if key.revoked_at else 'is-ok' }}"></span>
+                {{ 'revoked' if key.revoked_at else 'active' }}
+              </span>
+            </td>
+            <td>
+              {% if not key.revoked_at %}
+                <button class="btn btn-danger btn-sm" type="button"
+                        hx-post="/admin/keys/{{ key.id }}/revoke"
+                        hx-confirm="Revoke &quot;{{ key.name }}&quot;? Any integration using it starts getting 401s immediately."
+                        hx-target="#keys-panel" hx-swap="outerHTML">Revoke</button>
+              {% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="muted small">No keys yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>

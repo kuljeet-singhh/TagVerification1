@@ -1,0 +1,83 @@
+[project]
+name = "dooh-tag-verification"
+version = "1.0.0"
+description = "Verify that a DOOH creative actually contains the content it is tagged with"
+requires-python = ">=3.12"
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.12",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "psycopg[binary,pool]>=3.2",
+    # No migration tool yet, deliberately: the schema is stable and inherited unchanged from
+    # the previous implementation, so docs/schema.sql provisions a new database and the
+    # existing one needs nothing. Add Alembic when the first real schema change lands.
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "gradio-client>=1.5",
+    "httpx>=0.28",
+    "pillow>=10.0",
+    # Video decoding, for sampling frames out of a video creative. This is NOT a breach of
+    # the "never add torch/transformers/gradio here" rule: av is a codec binding, not ML, and
+    # the web-tier / model-tier split is untouched — the Space still only ever sees a still.
+    # Its wheels bundle ffmpeg statically, so there is no system package and no Dockerfile
+    # change. ~18MB, against ~2GB for the ML stack it is often confused with.
+    "av>=13",
+    "typer>=0.15",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.8",
+    "mypy>=1.14",
+]
+
+[project.scripts]
+dooh = "dooh.cli:app"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# `inference` is a package here so the web app can import the shared banding rule
+# from inference/banding.py. That directory is ALSO git-subtree-pushed to the
+# Hugging Face Space, where it runs flat (no package); see inference/banding.py.
+packages = [
+    "dooh",
+    "dooh.analyze",
+    "dooh.api",
+    "dooh.api.v1",
+    "dooh.auth",
+    "dooh.db",
+    "dooh.inference",
+    "dooh.tags",
+    "dooh.web",
+    "inference",
+]
+
+[tool.setuptools.package-data]
+dooh = ["templates/**/*.html", "static/**/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["B008"]  # FastAPI's Depends()/File() defaults are the documented idiom
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+warn_redundant_casts = true
+ignore_missing_imports = true

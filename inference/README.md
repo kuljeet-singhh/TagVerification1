@@ -82,11 +82,15 @@ to one round trip instead of Gradio's upload-then-submit dance.
 }
 ```
 
-`present: null` means the score landed between `threshold_low` and
-`threshold_high` — SigLIP is genuinely unsure and the caller should escalate to
-a vision LLM. Errors arrive as `event: error` with a message; unknown tags are
-rejected and echo the valid list, because "unknown tag" and "content absent"
-must never look alike.
+`present: null` means SigLIP is genuinely unsure and the caller should escalate
+to a vision LLM. It happens exactly one way: the score landed between
+`threshold_low` and `threshold_high`. A sigmoid below `sigmoid_floor` is a
+veto, not an escalation — it returns `present: false` with
+`decided_by: "sigmoid_floor"`. (A second "near-floor" band above the floor was
+tried and removed; `banding.py`'s docstring records why it cannot work, and
+`tests/test_banding.py` asserts it does not come back.) Errors arrive as
+`event: error` with a message; unknown tags are rejected and echo the valid
+list, because "unknown tag" and "content absent" must never look alike.
 
 ## Adding or changing a tag
 
@@ -152,8 +156,8 @@ The numbers in `packs.json` are **educated guesses**. Real values come from
 ./.venv/bin/python calibrate.py --max-escalation 0.5
 
 # 3. review calibration.json, then load it into Postgres (from the repo root)
-npm run calibrate:apply -- --dry-run
-npm run calibrate:apply
+dooh apply-calibration --dry-run
+dooh apply-calibration
 ```
 
 **How many images.** At least 8 per side per tag or the tag is scored but not

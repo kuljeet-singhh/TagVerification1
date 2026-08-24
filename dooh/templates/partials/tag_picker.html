@@ -1,0 +1,42 @@
+{# The 20 tags in four labelled groups rather than one flat scrolling box.
+
+   Restricted comes first and carries a marker, because those are the tags where
+   a wrong answer has a regulatory cost rather than a commercial one.
+
+   Each chip is a real <input type="checkbox" name="tags"> inside a <label>, so
+   keyboard navigation, screen-reader semantics and multi-value form submission
+   all work without a line of JavaScript.
+
+   The group is named with aria-labelledby pointing at its own visible heading,
+   NOT with a <legend class="sr-only">. Chrome's UA stylesheet for <legend>
+   overrides the visually-hidden positioning, so that legend rendered at full
+   width and pushed the page into horizontal overflow on a phone — and it also
+   made screen readers announce every group title twice, once from the legend
+   and once from the visible text. #}
+
+<div class="tag-groups">
+  {% for group in tag_groups %}
+    <fieldset class="tag-group" aria-labelledby="group-{{ loop.index }}">
+      <div class="tag-group-head">
+        <span class="eyebrow" id="group-{{ loop.index }}">
+          {% if group.restricted %}<span class="group-dot" aria-hidden="true"></span>{% endif %}
+          {{ group.title }}
+        </span>
+        <span class="count push">{{ group.tags | length }}</span>
+        <button type="button" class="btn btn-ghost btn-sm" data-select-group="all">All</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-select-group="none">None</button>
+      </div>
+
+      <div class="tag-list">
+        {% for tag in group.tags %}
+          <label class="tag" data-slug="{{ tag.slug }}" data-description="{{ tag.description }}">
+            <input type="checkbox" name="tags" value="{{ tag.slug }}"
+                   {% if tag.slug in selected %}checked{% endif %}>
+            <span class="dot" aria-hidden="true"></span>
+            <span>{{ tag.label }}</span>
+          </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+  {% endfor %}
+</div>

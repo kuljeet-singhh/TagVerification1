@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ico %}
+{% set page = 'admin' %}
+{% block title %}Sign in · Admin{% endblock %}
+
+{% block content %}
+<div class="auth-shell">
+  <div class="auth-card card card-pad" id="login-card">
+    <div class="auth-icon">{{ ico.icon('lock', 18) }}</div>
+    <h1>Admin sign in</h1>
+    <p class="small muted">
+      These pages mint API keys and change the thresholds that decide compliance verdicts.
+    </p>
+
+    <form method="post" action="/admin/login" class="stack gap-3">
+      <div class="field">
+        <label for="password">Password</label>
+        <input class="input" id="password" name="password" type="password" required autofocus
+               autocomplete="current-password"
+               {% if error %}aria-invalid="true" aria-describedby="login-error"{% endif %}>
+      </div>
+      {% if error %}
+        <p class="small callout callout-err" id="login-error" role="alert">{{ error }}</p>
+      {% endif %}
+      <button class="btn btn-primary btn-block" type="submit">Sign in</button>
+    </form>
+  </div>
+  <p class="xs subtle auth-note">
+    Set with <code class="mono">ADMIN_PASSWORD</code> in the environment.
+  </p>
+</div>
+{% endblock %}

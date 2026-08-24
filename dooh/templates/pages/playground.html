@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ico %}
+{% set page = 'playground' %}
+{% block title %}Playground · Tag Verification{% endblock %}
+
+{% block content %}
+<div class="wrap wrap-wide">
+  <div class="page-head">
+    <span class="eyebrow">Playground</span>
+    <h1>Does this creative contain what it&rsquo;s tagged with?</h1>
+    <p>
+      Each tag&rsquo;s prompts compete against hand-written hard negatives &mdash; whiskey has
+      to beat juice &mdash; and the image is scored whole plus as nine overlapping crops, so a
+      bottle in the corner of a billboard still registers.
+    </p>
+  </div>
+
+  <div class="pg-grid">
+    {# ------------------------------------------------------------ controls #}
+    <form id="analyze-form"
+          class="card card-pad stack gap-4 pg-controls"
+          hx-post="/ui/analyze"
+          hx-encoding="multipart/form-data"
+          hx-target="#results"
+          hx-swap="innerHTML settle:120ms"
+          {# A cold Space can take 8s and people click twice. `replace` aborts
+             the first request rather than racing two answers into one target. #}
+          hx-sync="this:replace"
+          hx-disabled-elt="#analyze-btn"
+          hx-indicator="#analyze-form">
+
+      <div class="stack gap-2">
+        <span class="step" id="step-creative">
+          <span class="step-n" aria-hidden="true">1</span>
+          <span class="eyebrow">Creative</span>
+        </span>
+
+        <div id="dropzone" class="dropzone" role="button" tabindex="0"
+             aria-label="Choose a creative image or video to analyse">
+          {{ ico.icon('upload', 26) }}
+          <strong>Drop a creative here</strong>
+          <span class="small">image or MP4 &middot; click to choose &middot; you can also paste one</span>
+        </div>
+
+        <input type="file" id="creative-input" name="media" class="sr-only"
+               accept="image/*,video/mp4,video/quicktime,video/webm">
+        <div id="preview-slot"></div>
+        <p id="size-note" class="xs subtle"></p>
+      </div>
+
+      <div class="stack gap-2">
+        <div class="row gap-2">
+          <span class="step" id="step-tags">
+            <span class="step-n" aria-hidden="true">2</span>
+            <span class="eyebrow">Tags to verify</span>
+          </span>
+          <span class="push chip"><span id="tag-count">{{ selected | length }}</span> selected</span>
+        </div>
+
+        <div class="tag-search">
+          {{ ico.icon('search') }}
+          <input class="input" id="tag-search" type="search" placeholder="Filter tags"
+                 aria-label="Filter the tag list" autocomplete="off">
+        </div>
+
+        {% include "partials/tag_picker.html" %}
+        <p id="tag-desc" class="tag-desc"></p>
+      </div>
+
+      <div class="action-bar">
+        <button class="btn btn-primary btn-lg btn-block" id="analyze-btn" type="submit">
+          <span class="when-idle" id="analyze-label">Analyse</span>
+          <span class="when-busy"><span class="spinner"></span>&nbsp;Analysing…</span>
+        </button>
+        <div class="row gap-2 xs subtle">
+          <span id="elapsed"></span>
+          <button type="button" class="btn btn-ghost btn-sm push" data-copy-link>
+            {{ ico.icon('link', 13) }} Copy link
+          </button>
+        </div>
+      </div>
+    </form>
+
+    {# ------------------------------------------------------------- results #}
+    <div id="results" aria-live="polite" aria-atomic="false">
+      {% if inference_down %}
+        {% include "partials/inference_down.html" %}
+      {% else %}
+        {% include "partials/results_empty.html" %}
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module" src="{{ asset('js/playground.js') }}"></script>
+{% endblock %}

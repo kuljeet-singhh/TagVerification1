@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% import "_icons.html" as ico %}
+{% block title %}{{ code }} · Tag Verification{% endblock %}
+
+{% block content %}
+<div class="auth-shell">
+  <div class="auth-card auth-card-wide card card-pad">
+    <div class="auth-icon auth-icon-warn">{{ ico.icon('alert', 18) }}</div>
+    <h1>{{ code }}</h1>
+    <p class="small muted">{{ message }}</p>
+    <div class="row gap-2 auth-actions">
+      <a class="btn btn-primary btn-sm" href="/">Back to the playground</a>
+      <a class="btn btn-ghost btn-sm" href="/docs">API reference</a>
+    </div>
+  </div>
+</div>
+{% endblock %}
