@@ -68,6 +68,12 @@ class InferenceHealth(BaseModel):
     packs_version: str
     tags: list[str]
     prompts: int
+    #: slug -> digest of the phrases and floor that model is actually scoring that tag with.
+    #: DEFAULTED, because the two tiers deploy on their own schedules: a Space still running
+    #: older code must not turn every admin page load into "Cannot tell what is live". None
+    #: therefore means "this model cannot tell us", NOT "nothing has drifted" -- the same
+    #: distinction live_slugs=None carries, and for the same reason.
+    prompt_fingerprints: dict[str, str] | None = None
 
 
 class TagInfo(BaseModel):
@@ -102,12 +108,29 @@ class InferenceError(Exception):
     """The service is reachable but the call failed or returned something unrecognisable."""
 
 
+class PublishNotConfigured(Exception):
+    """
+    Publishing is switched off because no shared secret is set.
+
+    Deliberately NOT an InferenceError. That one means "the model tried and failed", which
+    invites a retry; this means "you have not configured this", where retrying is pointless
+    and the fix is an operator's. Reporting the second as the first sends people to look at
+    the model tier for a problem that is in their environment file.
+    """
+
+
 # -------------------------------------------------------------------- plumbing
 
 # Warm requests take ~600ms-2s. A cold Space has to download and load ~400MB of weights, so
 # we give up early and report "warming" rather than holding a connection open for a minute.
 CALL_TIMEOUT_S = 8.0
 CONNECT_TIMEOUT_S = 6.0
+
+# Publishing a pack re-encodes the WHOLE prompt table on the Space's CPU -- measured at 4.8s
+# for 266 prompts and growing with the catalog -- so it does not fit in the read budget above.
+# Its own number, because raising CALL_TIMEOUT_S would mean every scoring request waits eight
+# times longer to find out the Space is asleep.
+RELOAD_TIMEOUT_S = 60.0
 
 _client: Any = None
 _connect_lock = asyncio.Lock()
@@ -165,17 +188,17 @@ def reset_client() -> None:
     _client = None
 
 
-async def _call(endpoint: str, *payload: Any) -> Any:
+async def _call(endpoint: str, *payload: Any, timeout: float = CALL_TIMEOUT_S) -> Any:
     client = await _connected()
 
     def _run() -> Any:
         return client.predict(*payload, api_name=f"/{endpoint}")
 
     try:
-        with anyio.fail_after(CALL_TIMEOUT_S):
+        with anyio.fail_after(timeout):
             return await anyio.to_thread.run_sync(_run)
     except TimeoutError as exc:
-        raise InferenceWarming(f"/{endpoint} exceeded {CALL_TIMEOUT_S}s") from exc
+        raise InferenceWarming(f"/{endpoint} exceeded {timeout}s") from exc
     except Exception as exc:
         # A dropped connection usually means the Space restarted; force a fresh handshake.
         reset_client()
@@ -204,16 +227,66 @@ async def analyze_image(image_base64: str, tags: list[str]) -> RawAnalysis:
 
 async def inference_health() -> InferenceHealth:
     try:
-        return InferenceHealth.model_validate(await _call("health", ))
+        return InferenceHealth.model_validate(
+            await _call(
+                "health",
+            )
+        )
     except ValidationError as exc:
         raise InferenceError(f"unexpected health response: {exc}") from exc
 
 
 async def tag_catalog() -> TagCatalog:
     try:
-        return TagCatalog.model_validate(await _call("tags", ))
+        return TagCatalog.model_validate(
+            await _call(
+                "tags",
+            )
+        )
     except ValidationError as exc:
         raise InferenceError(f"unexpected tags response: {exc}") from exc
+
+
+def require_publishing_configured() -> str:
+    """
+    The shared secret, or a refusal. Separate from push_packs so a caller can find out BEFORE
+    doing work it would have to undo — see tags/publish.py, which writes a file.
+    """
+    secret = (settings().reload_secret or "").strip()
+    if not secret:
+        raise PublishNotConfigured(
+            "RELOAD_SECRET is not set — refusing to publish. Set it here and as RELOAD_SECRET "
+            "on the model tier, or export the pack and restart the model instead."
+        )
+    return secret
+
+
+async def push_packs(pack_bytes: bytes) -> InferenceHealth:
+    """
+    Publish a pack into the RUNNING model, so a new tag goes live without a restart.
+
+    Takes BYTES, and they must be the exporter's own: packs_version is a hash of them, so a
+    re-serialised pack would fingerprint differently from the file `dooh export-packs` wrote
+    and `dooh apply-calibration` would then refuse the calibration measured against it.
+
+    Clears the memos on success. That is not tidiness -- analyze/run.py stamps
+    `cached_inference_health().packs_version` onto both the audit row and the score-cache row,
+    so for up to _TTL_S after a reload, scores computed under the NEW pack would be persisted
+    labelled with the OLD one. Wrong-fingerprint rows are exactly what versioning.py exists to
+    make impossible, and they would be served as current until they expired.
+    """
+    secret = require_publishing_configured()
+
+    raw = await _call("reload_packs", pack_bytes.decode(), secret, timeout=RELOAD_TIMEOUT_S)
+    try:
+        health = InferenceHealth.model_validate(raw)
+    except ValidationError as exc:
+        raise InferenceError(f"unexpected reload response: {exc}") from exc
+
+    # Only after the model confirmed the swap. Clearing on failure would replace a known-good
+    # memo with a re-read of the same unchanged pack, for nothing.
+    reset_caches()
+    return health
 
 
 # ------------------------------------------------------------ memoised reads

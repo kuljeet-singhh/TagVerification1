@@ -40,7 +40,7 @@ from pathlib import Path
 LENGTH = 12
 
 
-def scorer_version(packs: Path | str, scorer: Path | str) -> str:
+def scorer_version(packs: Path | str | bytes, scorer: Path | str) -> str:
     """
     Fingerprint the prompt pack and the scoring code together.
 
@@ -50,9 +50,62 @@ def scorer_version(packs: Path | str, scorer: Path | str) -> str:
 
     The separator is a NUL byte, which cannot occur in either file, so no concatenation of one
     file's tail with the other's head can collide with a different pair.
+
+    `packs` may be the FILE or its BYTES, and the two are interchangeable: the same bytes give
+    the same digest either way. The bytes form exists for reload_packs, where the pack arrives
+    over the wire and the copy on disk is the stale one -- hashing that copy would leave the
+    fingerprint sitting still while every score moved, which is the exact failure this module
+    exists to prevent. Callers that hold a path should keep passing the path; nothing here
+    re-serialises, so a pushed pack must be the exporter's own bytes, byte for byte.
     """
     digest = hashlib.sha256()
-    digest.update(Path(packs).read_bytes())
+    digest.update(packs if isinstance(packs, bytes) else Path(packs).read_bytes())
     digest.update(b"\x00")
     digest.update(Path(scorer).read_bytes())
+    return digest.hexdigest()[:LENGTH]
+
+
+def surface_fingerprint(
+    positives: list[str], negatives: list[str], sigmoid_floor: float | None = None
+) -> str:
+    """
+    Fingerprint ONE tag's scoring surface -- everything about it that can move a score.
+
+    packs_version answers "is the whole catalog the one that produced this score". This
+    answers the narrower question the admin page needs: is the running model scoring THIS tag
+    off what the catalog currently says? Comparing slugs cannot tell -- an edited tag keeps
+    its slug, so rewriting every phrase in it raised no warning at all while the model went on
+    matching the old ones.
+
+    The three fields are the SCORING SURFACE, the same set tests/test_packs.py pins under
+    that name: they are what reaches _row()/text_embeds and thresholds(). Deliberately NOT
+    label, description or the `//negatives` rationale -- those reach the catalog listing and
+    a human reader, never a number, and flagging a typo fix in a description as "the model is
+    stale" is the always-on warning this banner exists to avoid being.
+
+    ORDER MATTERS. Reordering phrases rewrites packs.json, which moves packs_version, so it
+    has to move this too or the two would disagree about whether anything changed.
+
+    Both tiers call THIS function -- the model over its loaded pack, the web app over the
+    database row -- which is why it lives in the one module that ships flat to the Space and
+    is also copied into the web image. Do not reimplement it on either side: two fingerprints
+    that drift would report "stale" forever, and nobody would trust the banner again.
+
+    It lives here rather than in detector.py for a sharper reason than tidiness. packs_version
+    hashes detector.py's BYTES, so a function defined there is part of the scoring
+    fingerprint -- and later tuning what this covers would move packs_version, invalidating
+    every cached score and every calibration stamp, for a change that moved no score at all.
+    Nothing hashes versioning.py.
+    """
+    digest = hashlib.sha256()
+    for group in (positives, negatives):
+        for phrase in group:
+            digest.update(phrase.encode())
+            # NUL between phrases, \x01 between the groups: without the second separator
+            # ["ab"],[] and ["a","b"],[] and [],["ab"] would all hash the same.
+            digest.update(b"\x00")
+        digest.update(b"\x01")
+    # repr() rather than str(): None and the float 0.0 must not collide, and repr round-trips
+    # a float exactly where formatting could round two different floors together.
+    digest.update(repr(sigmoid_floor).encode())
     return digest.hexdigest()[:LENGTH]

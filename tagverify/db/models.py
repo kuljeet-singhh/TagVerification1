@@ -1,5 +1,5 @@
 """
-The five tables, mapped exactly onto the existing Neon schema.
+The tables, mapped exactly onto the existing Neon schema.
 
 Column names, types and defaults are deliberately byte-identical to what the previous
 Drizzle schema created, because this is a rewrite of the application and NOT a migration
@@ -14,11 +14,13 @@ from datetime import datetime
 from sqlalchemy import (
     REAL,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
     Integer,
     PrimaryKeyConstraint,
+    SmallInteger,
     Text,
     func,
     text,
@@ -52,6 +54,20 @@ class ApiKey(Base):
     rate_limit_per_min: Mapped[int] = mapped_column(
         Integer, nullable=False, default=60, server_default=text("60")
     )
+    #: What this key may do BEYOND analysing images. Empty is the norm and means analyze-only.
+    #:
+    #: It exists so DOOH can edit the tag catalog over HTTP without holding ADMIN_PASSWORD,
+    #: which also mints keys and edits thresholds. The scope is checked in
+    #: auth/deps.py::require_tags_write.
+    #:
+    #: Additive by design: an unscoped key behaves exactly as it did before this column, so
+    #: the analyze key DOOH already holds keeps working and cannot rewrite the taxonomy. Issue
+    #: a SECOND key for tag writes rather than widening that one — the separation is the whole
+    #: point, and it is the property auth/deps.py's refusal to key-authorise tag writes was
+    #: protecting in the first place.
+    scopes: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
@@ -68,12 +84,18 @@ class TagThreshold(Base):
     """
     Per-tag decision thresholds.
 
-    WHY THESE LIVE IN POSTGRES AND THE PROMPTS DO NOT
-    -------------------------------------------------
-    The prompt packs (positives / hard negatives) MUST live in inference/packs.json, because
-    the Space encodes them into text embeddings at startup. Changing a prompt means
-    re-encoding, which means a restart. There is no way around that, and storing prompts here
-    too would just create two sources of truth that silently drift apart.
+    WHY THESE ARE SEPARATE FROM THE PROMPTS
+    ---------------------------------------
+    This used to read "the prompt packs MUST live in inference/packs.json ... there is no way
+    around that, and storing prompts here too would just create two sources of truth". The
+    prompts now live in `content_tags` below, so that is no longer where they are -- but the
+    reasoning was half right and the half that held is worth keeping.
+
+    What was true: the Space encodes prompts into text embeddings at startup, so changing one
+    still means a restart. packs.json remains how the prompts reach the model; it is just
+    GENERATED from the table now instead of hand-edited. What the objection got right was the
+    drift risk, and that is answered by direction rather than by location: one authority
+    (Postgres), one direction (export), and nobody editing the file by hand.
 
     Thresholds are different. They are only ever *comparisons against a returned score*, so
     the API tier can apply them after the fact. Keeping them here means calibration results
@@ -210,3 +232,122 @@ class UsageCounter(Base):
     )
 
     __table_args__ = (PrimaryKeyConstraint("api_key_id", "window_start"),)
+
+
+class ContentTag(Base):
+    """
+    The tag catalog: every tag the detector knows, prompts included.
+
+    This table is the source of truth. `inference/packs.json` is generated from it by
+    `dooh export-packs` and read by the model tier at import; nothing hand-edits that file
+    any more. The direction is one-way on purpose -- the objection recorded above about two
+    sources of truth is answered by there being one authority and one direction, not by
+    keeping prompts out of the database.
+
+    A tag IS its prompts. `positives` are what we are hunting; `negatives` are hard negatives
+    -- things that look confusably similar and are NOT the tag -- and they do most of the
+    work. See the authoring rules in packs.json and docs/TAG_CRUD_IMPLEMENTATION.md 1.
+    """
+
+    __tablename__ = "content_tags"
+
+    slug: Mapped[str] = mapped_column(Text, primary_key=True)
+    label: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+
+    positives: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    negatives: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+
+    #: Why THESE negatives. Free prose, carried over from the `//negatives` keys in
+    #: packs.json, where it records measurements that would otherwise be lost -- e.g. that a
+    #: hamburger scored 0.939 for `alcohol` until bar-food scenes were named as negatives.
+    rationale: Mapped[str | None] = mapped_column(Text)
+
+    #: Per-tag override of the pack default. Only `revealing_clothing` sets one today.
+    sigmoid_floor: Mapped[float | None] = mapped_column(REAL)
+
+    #: 'active' | 'retired'. Text rather than an enum because nothing else here uses one.
+    #: Retired never means deleted -- see docs/TAG_CRUD_IMPLEMENTATION.md 6: a hard delete
+    #: leaves the slug in DOOH's devices.blocked_tags, where it produces no verdict and turns
+    #: every upload to that screen into a review-queue entry.
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="active", server_default=text("'active'")
+    )
+
+    #: Position in the exported file. Reordering tags would change packs.json's bytes and so
+    #: its fingerprint, for no reason, so the order is preserved rather than re-derived.
+    sort_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+
+    #: Passthrough for pack keys this schema does not model (`detect_objects`, `escalate` --
+    #: both dead, read by nothing). Kept rather than dropped so that importing the existing
+    #: catalog and exporting it again loses nothing: the export is then a REFORMAT, which
+    #: needs no recalibration, instead of a semantic change, which would.
+    extra: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    created_by: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    #: Free-text provenance, same convention as tag_thresholds: 'admin' | 'seed'.
+    updated_by: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (Index("content_tags_status_idx", "status"),)
+
+
+class PackHeader(Base):
+    """
+    The part of `inference/packs.json` that is not tags.
+
+    `$comment`, `prompt_template`, `shared_distractors` and `defaults` -- packs.py's
+    FILE_LEVEL_KEYS. They used to live only in the file, which made `dooh export-packs` read
+    the file in order to write it. That circular dependency is why publishing failed inside
+    the Docker image, which copies three files out of `inference/` and not the pack.
+
+    WHY `body` IS TEXT AND NOT JSONB
+    --------------------------------
+    Load-bearing, and the reason this table exists at all rather than four typed columns.
+    `packs_version` hashes the exported file's BYTES, so a key emitted in a different order
+    is a different pack as far as every downstream fingerprint is concerned -- every tag
+    would report `calibrated: false` and `apply-calibration` would refuse the calibration
+    file, for a change that moved no score. JSONB does not preserve key order (packs.py says
+    the same thing about `_EXTRA_ORDER`, for the same reason), and `defaults` carries five
+    keys in a fixed order, one of which -- `//sigmoid_floor` -- is prose.
+
+    TEXT sidesteps it entirely: the bytes go in and come out unchanged, `json.loads` keeps
+    their order because Python dicts are insertion-ordered, and `render_pack` re-emits them
+    exactly as it always did.
+
+    These are not comments, `$comment` aside. detector.py reads `prompt_template`,
+    `shared_distractors` and `defaults` at load time -- they are live scoring inputs, so an
+    edit here moves every verdict in the system.
+    """
+
+    __tablename__ = "pack_header"
+
+    #: Always 1. A CHECK rather than a convention, because two headers has no meaning -- the
+    #: exporter would have to pick one, and picking is exactly the ambiguity to refuse.
+    id: Mapped[int] = mapped_column(
+        SmallInteger, primary_key=True, default=1, server_default=text("1")
+    )
+
+    #: The four keys as a JSON object, verbatim. See the class docstring before changing the
+    #: type -- TEXT is the whole point.
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    #: Free-text provenance, same convention as content_tags: 'seed' | 'admin'.
+    updated_by: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (CheckConstraint("id = 1", name="pack_header_singleton"),)

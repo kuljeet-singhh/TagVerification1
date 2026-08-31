@@ -1,0 +1,51 @@
+{# The row is its own swap target, same as threshold_row.html: retiring one tag should not
+   re-render, and re-scroll, a table of twenty. #}
+<tr id="tag-{{ row.slug }}" class="{{ 'is-revoked' if row.status == 'retired' else '' }}">
+  <td><span class="mono">{{ row.slug }}</span></td>
+  <td>{{ row.label }}</td>
+  <td class="tnum">{{ row.positives | length }}</td>
+  <td class="tnum">{{ row.negatives | length }}</td>
+  <td>
+    {% if row.status == 'retired' %}
+      <span class="chip">retired</span>
+    {% else %}
+      <span class="chip chip-accent">active</span>
+      {# publish_state() is None when we cannot tell -- the model did not answer, or it is
+         old enough not to report fingerprints -- and then we say nothing at all. Flagging
+         every row because health timed out would be worse than flagging none. #}
+      {% set published = publish_state(row, live_slugs|default(none), live_fingerprints|default(none)) %}
+      {% if published == 'absent' %}
+        <span class="chip chip-warn" title="Saved, but the running model does not have it yet">
+          not live
+        </span>
+      {% elif published == 'edited' %}
+        <span class="chip chip-warn"
+              title="The running model still has this tag's earlier phrases. Publish to apply the edit.">
+          edit not live
+        </span>
+      {% endif %}
+    {% endif %}
+  </td>
+  <td>
+    {% if row.status != 'retired' %}
+      <button class="btn btn-outline btn-sm" type="button"
+              hx-get="/admin/tags/{{ row.slug }}/edit"
+              hx-target="#tag-{{ row.slug }}" hx-swap="outerHTML">Edit</button>
+      <button class="btn btn-danger btn-sm" type="button"
+              hx-post="/admin/tags/{{ row.slug }}/retire"
+              hx-confirm="Retire &quot;{{ row.label }}&quot;? It disappears from the catalog on the next export. Screens already blocking it keep working until they are next saved."
+              hx-target="#tags-panel" hx-swap="outerHTML">Retire</button>
+    {% endif %}
+  </td>
+</tr>
+{% if row_warnings %}
+  <tr>
+    <td colspan="6">
+      <div class="callout callout-warn" style="margin:0">
+        <ul class="small" style="margin:0; padding-left:18px">
+          {% for warning in row_warnings %}<li>{{ warning }}</li>{% endfor %}
+        </ul>
+      </div>
+    </td>
+  </tr>
+{% endif %}

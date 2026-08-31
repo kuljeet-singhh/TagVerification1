@@ -8,18 +8,19 @@
   <div class="admin-head">
     <div>
       <h1>Admin</h1>
-      <p>Issues API keys and edits the thresholds that decide every verdict.</p>
+      <p>Issues API keys, edits the tag catalog, and edits the thresholds that decide
+         every verdict.</p>
     </div>
     <form method="post" action="/admin/logout" class="push">
       <button class="btn btn-ghost btn-sm" type="submit">Sign out</button>
     </form>
   </div>
 
-  {# Two panels behind tabs rather than stacked: a 20-row threshold table would
+  {# Panels behind tabs rather than stacked: a 20-row threshold table would
      otherwise push the keys table entirely off screen. #}
   <div class="tabs segmented" role="tablist" aria-label="Admin sections">
     <button role="tab" type="button" data-tab="keys"
-            aria-selected="{{ 'true' if tab != 'thresholds' else 'false' }}"
+            aria-selected="{{ 'true' if tab == 'keys' else 'false' }}"
             aria-controls="panel-keys">
       {{ ico.icon('key', 14) }} API keys
       <span class="count tnum">{{ keys | length }}</span>
@@ -30,26 +31,45 @@
       {{ ico.icon('sliders', 14) }} Thresholds
       <span class="count tnum">{{ thresholds | length }}</span>
     </button>
+    <button role="tab" type="button" data-tab="tags"
+            aria-selected="{{ 'true' if tab == 'tags' else 'false' }}"
+            aria-controls="panel-tags">
+      {{ ico.icon('sparkle', 14) }} Tags
+      <span class="count tnum">{{ content_tags | selectattr('status', 'equalto', 'active') | list | length }}</span>
+    </button>
   </div>
 
-  <div id="panel-keys" role="tabpanel" {% if tab == 'thresholds' %}hidden{% endif %}>
+  <div id="panel-keys" role="tabpanel" {% if tab != 'keys' %}hidden{% endif %}>
     {% include "partials/keys_panel.html" %}
   </div>
 
   <div id="panel-thresholds" role="tabpanel" {% if tab != 'thresholds' %}hidden{% endif %}>
     {% include "partials/thresholds_panel.html" %}
   </div>
+
+  <div id="panel-tags" role="tabpanel" {% if tab != 'tags' %}hidden{% endif %}>
+    {% include "partials/tags_panel.html" %}
+  </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-document.querySelectorAll("[data-tab]").forEach((tab) => {
+/* Derived from the tab strip rather than naming each panel: this hardcoded
+   panel-keys and panel-thresholds, so adding a third tab silently left the old
+   one visible underneath it.
+
+   This handler only runs on click. The FIRST paint is the Jinja above, which is a
+   separate copy of the same rule -- fixing only this half is how ?tab=tags came to
+   render the keys panel and the tags panel stacked together. Every tab and every
+   panel up there tests its own name; keep it that way when a fourth tab lands. */
+const tabs = [...document.querySelectorAll("[data-tab]")];
+tabs.forEach((tab) => {
   tab.addEventListener("click", () => {
-    document.querySelectorAll("[data-tab]").forEach((t) =>
-      t.setAttribute("aria-selected", String(t === tab)));
-    document.getElementById("panel-keys").hidden = tab.dataset.tab !== "keys";
-    document.getElementById("panel-thresholds").hidden = tab.dataset.tab !== "thresholds";
+    tabs.forEach((t) => {
+      t.setAttribute("aria-selected", String(t === tab));
+      document.getElementById(`panel-${t.dataset.tab}`).hidden = t !== tab;
+    });
     history.replaceState(null, "", `/admin?tab=${tab.dataset.tab}`);
   });
 });
@@ -76,5 +96,42 @@ document.addEventListener("input", (event) => {
   if (row) paintRuler(row);
 });
 document.querySelectorAll("form[data-threshold-row]").forEach(paintRuler);
+
+/* Slug follows the label until someone edits the slug themselves.
+
+   A slug is a transform of the label, not a decision -- "Pet supplies" is always
+   pet_supplies -- but the field stays visible and editable because the value is
+   permanent: it is the join key for that tag's eval images and thresholds, it is
+   published to DOOH, and it is the folder name an admin creates by hand under
+   inference/eval/<slug>/. Deriving it silently would hide something they later have
+   to go and look up.
+
+   Delegated on document rather than bound to #tag-label, because the whole panel is
+   replaced by hx-swap="outerHTML" -- a direct binding would be dead after the first
+   rejection, which is exactly when the field matters most.
+
+   This is a convenience, never the validation. The server owns SLUG_RE, and a label
+   that slugifies badly ("3D printing" -> "d_printing", since the pattern needs a
+   leading letter) is why the field can still be typed into. */
+function slugify(value) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/^[^a-z]+/, "");
+}
+
+document.addEventListener("input", (event) => {
+  const field = event.target;
+  if (field.id === "tag-slug") {
+    field.dataset.touched = "1";
+    return;
+  }
+  if (field.id !== "tag-label") return;
+
+  const slug = document.getElementById("tag-slug");
+  if (!slug || slug.dataset.touched === "1") return;
+  slug.value = slugify(field.value);
+});
 </script>
 {% endblock %}

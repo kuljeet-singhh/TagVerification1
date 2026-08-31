@@ -22,6 +22,7 @@ import base64
 import hashlib
 import secrets
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -65,9 +66,19 @@ def generate_api_key() -> IssuedKey:
 
 
 async def create_api_key(
-    session: AsyncSession, name: str, rate_limit_per_min: int = 60
+    session: AsyncSession,
+    name: str,
+    rate_limit_per_min: int = 60,
+    scopes: Sequence[str] = (),
 ) -> IssuedKey:
-    """Issue a key and persist it. Surface the plaintext once, then discard it."""
+    """
+    Issue a key and persist it. Surface the plaintext once, then discard it.
+
+    `scopes` defaults to empty, which is analyze-only and what almost every key should be.
+    Pass TAGS_WRITE only for a key whose job is editing the catalog, and issue it SEPARATELY
+    from the analyze key — a single key that can both score images and redefine what the
+    scores mean is the thing scopes exist to avoid.
+    """
     key = generate_api_key()
     session.add(
         ApiKey(
@@ -76,6 +87,9 @@ async def create_api_key(
             key_hash=key.key_hash,
             key_prefix=key.key_prefix,
             rate_limit_per_min=rate_limit_per_min,
+            # Sorted and de-duplicated so the stored value is canonical: the admin panel
+            # renders it directly, and two keys with the same powers should read the same.
+            scopes=sorted(set(scopes)),
         )
     )
     await session.flush()

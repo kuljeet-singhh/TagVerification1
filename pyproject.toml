@@ -11,9 +11,11 @@ dependencies = [
     "python-multipart>=0.0.12",
     "sqlalchemy[asyncio]>=2.0.36",
     "psycopg[binary,pool]>=3.2",
-    # No migration tool yet, deliberately: the schema is stable and inherited unchanged from
-    # the previous implementation, so docs/schema.sql provisions a new database and the
-    # existing one needs nothing. Add Alembic when the first real schema change lands.
+    # Added when the first real schema change landed (api_keys.scopes, migrations/versions/
+    # 0001). Before that, docs/schema.sql provisioned a new database and the inherited one
+    # needed nothing. schema.sql is still the provisioning file; Alembic is how an EXISTING
+    # database moves forward, and a column belongs in both.
+    "alembic>=1.13",
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
     "gradio-client>=1.5",

@@ -19,7 +19,9 @@ the same thing, their two vectors point in roughly the same direction. So
 same way as the vector for 'a glass of beer with foam'?" -- which is a dot
 product, i.e. one multiplication.
 
-We never train anything. Adding a tag = writing sentences.
+We never train anything. Adding a tag = writing sentences. (Those sentences now live in
+Postgres and reach this file via `dooh export-packs`, but they are still just sentences --
+nothing here is trained, and packs.json is still what this module reads.)
 
 --------------------------------------------------------------------------
 WHY WE USE *BOTH* SOFTMAX AND SIGMOID
@@ -161,23 +163,7 @@ class Detector:
 
     def __init__(self, packs_path: str | Path = "packs.json", grid: int = 3):
         self.grid = grid
-
-        config = json.loads(Path(packs_path).read_text())
-
         self.model_id = MODEL_ID
-        # Fingerprint of the prompts AND of this file. Any edit to a prompt, a threshold or
-        # the scoring code changes it, so a stored score can always be traced back to the
-        # exact configuration that produced it -- and, because caches key on it, a scoring
-        # change cannot leave stale numbers behind claiming to be current.
-        #
-        # It covers detector.py because it has to: cross-tag competition (see _verdict) moved
-        # every score in the product without touching packs.json. The rule lives in
-        # versioning.py and nowhere else; dooh/cli.py used to keep its own copy.
-        self.packs_version = scorer_version(packs_path, __file__)
-
-        self.template: str = config["prompt_template"]
-        self.defaults: dict = config["defaults"]
-        self.packs: dict[str, dict] = {tag["slug"]: tag for tag in config["tags"]}
 
         print(f"[detector] loading {MODEL_ID} ...")
         self.model = AutoModel.from_pretrained(MODEL_ID)
@@ -191,6 +177,60 @@ class Detector:
         # for the sigmoid, which is why we keep it.
         self.logit_scale = self.model.logit_scale.exp().item()
         self.logit_bias = self.model.logit_bias.item()
+
+        pack_bytes = Path(packs_path).read_bytes()
+        # Fingerprint of the prompts AND of this file. Any edit to a prompt, a threshold or
+        # the scoring code changes it, so a stored score can always be traced back to the
+        # exact configuration that produced it -- and, because caches key on it, a scoring
+        # change cannot leave stale numbers behind claiming to be current.
+        #
+        # It covers detector.py because it has to: cross-tag competition (see _verdict) moved
+        # every score in the product without touching packs.json. The rule lives in
+        # versioning.py and nowhere else; dooh/cli.py used to keep its own copy.
+        self._build_packs(pack_bytes)
+
+    def rebuilt(self, pack_bytes: bytes) -> "Detector":
+        """
+        A new Detector over a new pack, SHARING this one's loaded weights.
+
+        A NEW OBJECT, NEVER MUTATION IN PLACE. analyze() resolves `self` once at call time and
+        pins it for the whole call, so rebinding the module-level DETECTOR is atomic from an
+        in-flight request's point of view -- the old instance stays alive in that frame until
+        it returns. Mutating would not be atomic: _verdict reads _rival_rows and _prompt_rows
+        AFTER the forward pass that read text_embeds, so a swap landing between those points
+        indexes the new row table into the old embedding matrix and returns WRONG SCORES with
+        no exception raised. Row indices are only stable under append; any edit or removal
+        renumbers them.
+
+        The weights are deliberately not reloaded. They are the expensive, pack-independent
+        half, and a second from_pretrained would double peak RSS on the two free cores a
+        Space gets.
+        """
+        clone = object.__new__(type(self))
+        clone.grid = self.grid
+        clone.model_id = self.model_id
+        clone.model = self.model
+        clone.processor = self.processor
+        clone.logit_scale = self.logit_scale
+        clone.logit_bias = self.logit_bias
+        clone._build_packs(pack_bytes)
+        return clone
+
+    def _build_packs(self, pack_bytes: bytes) -> None:
+        """
+        Everything derived from the pack. Split out of __init__ so rebuilt() can redo exactly
+        this much and no more.
+
+        Hashes the BYTES it was handed rather than re-reading the file: on a reload the copy
+        on disk is the stale one, and fingerprinting it would leave packs_version still while
+        every score moved.
+        """
+        config = json.loads(pack_bytes)
+        self.packs_version = scorer_version(pack_bytes, __file__)
+
+        self.template: str = config["prompt_template"]
+        self.defaults: dict = config["defaults"]
+        self.packs: dict[str, dict] = {tag["slug"]: tag for tag in config["tags"]}
 
         # ---- build one flat table of every prompt we will ever need ----------
         # Rows are shared: if two packs use the same phrase it is encoded once.

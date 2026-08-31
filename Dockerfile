@@ -6,6 +6,12 @@
 # verdict rule with the model service, and inference/versioning.py, because tagverify/cli.py imports
 # it at module scope and without it the `dooh` console script cannot start in this image. Both
 # import nothing but stdlib, so they cost nothing. Do not "tidy" either path away.
+#
+# packs.json is deliberately NOT here, and adding it would be a regression rather than a fix.
+# Publishing used to read the file to preserve its header, which made POST /api/v1/tags/publish
+# fail in this image while working from a checkout; the header now lives in `pack_header` and
+# the export is database-to-bytes. The first publish creates the file. If you are reaching for
+# this line because publishing failed, the answer is `dooh seed-tags`, not a COPY.
 
 FROM python:3.12-slim AS build
 

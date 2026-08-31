@@ -57,6 +57,19 @@
         <span class="when-busy"><span class="spinner"></span>&nbsp;Creating…</span>
       </button>
     </div>
+
+    {# Off by default and deliberately awkward to turn on. A key that can both score images
+       and rewrite what the scores mean is the thing this checkbox exists to keep rare. #}
+    <label class="row gap-2 small" style="align-items:flex-start">
+      <input type="checkbox" name="tags_write" value="1" style="margin-top:3px">
+      <span>
+        <strong>Can edit the tag catalog</strong>
+        <span class="muted">
+          &mdash; for a service that manages tags, such as DOOH admin. Leave this off for a
+          scoring client, and issue a separate key rather than adding it to one already in use.
+        </span>
+      </span>
+    </label>
     {% if key_error %}<p class="small" role="alert" style="color:var(--present-fg)">{{ key_error }}</p>{% endif %}
   </form>
 
@@ -64,7 +77,8 @@
     <table class="data">
       <thead>
         <tr>
-          <th>Name</th><th>Key</th><th>Limit</th><th>Last used</th><th>Status</th><th></th>
+          <th>Name</th><th>Key</th><th>Limit</th><th>Scope</th><th>Last used</th>
+          <th>Status</th><th></th>
         </tr>
       </thead>
       <tbody>
@@ -73,6 +87,15 @@
             <td>{{ key.name }}</td>
             <td class="mono xs">dooh_live_{{ key.key_prefix }}…</td>
             <td class="tnum">{{ key.rate_limit_per_min }}/min</td>
+            <td>
+              {% if 'tags:write' in (key.scopes or []) %}
+                <span class="chip chip-warn" title="This key can create, edit and retire tags">
+                  edits tags
+                </span>
+              {% else %}
+                <span class="small muted">analyze</span>
+              {% endif %}
+            </td>
             <td class="small muted">{{ key.last_used_at | relative_time }}</td>
             <td>
               <span class="row gap-2 small">
@@ -90,7 +113,7 @@
             </td>
           </tr>
         {% else %}
-          <tr><td colspan="6" class="muted small">No keys yet.</td></tr>
+          <tr><td colspan="7" class="muted small">No keys yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>

@@ -15,6 +15,8 @@ import time
 import pytest
 
 from tagverify.auth import admin
+from tagverify.scoring.client import InferenceError, InferenceWarming
+from tagverify.web import admin as admin_web
 from tests.conftest import needs_db
 
 
@@ -65,9 +67,7 @@ async def test_expired_cookie_is_rejected(client, admin_password: str) -> None:
 async def test_future_dated_cookie_is_rejected(client, admin_password: str) -> None:
     """A negative age must not be treated as freshly issued."""
     tomorrow = str(now_ms() + (24 * 60 * 60 * 1000))
-    response = await client.get(
-        "/admin", cookies={admin.COOKIE: forge(tomorrow, admin_password)}
-    )
+    response = await client.get("/admin", cookies={admin.COOKIE: forge(tomorrow, admin_password)})
     assert "Admin sign in" in response.text
 
 
@@ -206,3 +206,68 @@ async def test_create_key_rejects_an_out_of_range_limit(client, admin_password, 
         headers={"x-csrf-token": admin.csrf_token()},
     )
     assert "between 1 and 10000" in response.text
+
+
+# ------------------------------------------------------- the shell rail's health dot
+
+
+class _FakeHealth:
+    tags = ["alcohol"]
+    packs_version = "deadbeef1234"
+    model = "google/siglip2-base-patch16-224"
+    prompt_fingerprints: dict[str, str] | None = None
+
+
+@needs_db
+@pytest.mark.parametrize(
+    ("outcome", "word"),
+    [
+        (None, "Inference online"),
+        (InferenceWarming("waking"), "Inference waking"),
+        (InferenceError("asleep"), "Inference unreachable"),
+    ],
+)
+async def test_the_admin_rail_reports_the_real_inference_state(
+    client, admin_password: str, monkeypatch, outcome, word: str
+) -> None:
+    """
+    /admin used to set no health_class at all, so base.html fell through to its
+    "Inference unknown" default on every load -- a word that told you nothing while the tag
+    rows beside it, from the SAME health answer, said "not live".
+    """
+
+    async def _health():
+        if outcome is not None:
+            raise outcome
+        return _FakeHealth()
+
+    monkeypatch.setattr(admin_web, "cached_inference_health", _health)
+
+    html = (
+        await client.get("/admin", cookies={admin.COOKIE: forge(str(now_ms()), admin_password)})
+    ).text
+    assert word in html
+    assert "Inference unknown" not in html
+
+
+@needs_db
+async def test_the_admin_page_asks_the_model_once(client, admin_password: str, monkeypatch) -> None:
+    """
+    The rail and the tag rows both need the health answer, and cached_inference_health()
+    memoises SUCCESSES only. A second call would cost a second 8s timeout on one page load,
+    in exactly the situation where the model is already down.
+    """
+    calls = 0
+
+    async def _health():
+        nonlocal calls
+        calls += 1
+        raise InferenceError("asleep")
+
+    monkeypatch.setattr(admin_web, "cached_inference_health", _health)
+
+    response = await client.get(
+        "/admin?tab=tags", cookies={admin.COOKIE: forge(str(now_ms()), admin_password)}
+    )
+    assert response.status_code == 200
+    assert calls == 1

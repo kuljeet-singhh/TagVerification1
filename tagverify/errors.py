@@ -32,12 +32,17 @@ ApiErrorCode = Literal[
     "VIDEO_TOO_LONG",
     "INVALID_VIDEO",
     "BAD_REQUEST",
+    "FORBIDDEN",
+    "NOT_FOUND",
+    "NOT_CONFIGURED",
     "INFERENCE_WARMING",
     "INFERENCE_FAILED",
     "INTERNAL",
 ]
 
 STATUS: dict[str, int] = {
+    # The caller did nothing wrong and the upstream is fine — the deployment is incomplete.
+    "NOT_CONFIGURED": 409,
     "MISSING_KEY": 401,
     "INVALID_KEY": 401,
     "RATE_LIMITED": 429,
@@ -51,6 +56,8 @@ STATUS: dict[str, int] = {
     "VIDEO_TOO_LONG": 413,
     "INVALID_VIDEO": 400,
     "BAD_REQUEST": 400,
+    "FORBIDDEN": 403,
+    "NOT_FOUND": 404,
     "INFERENCE_WARMING": 503,
     "INFERENCE_FAILED": 502,
     "INTERNAL": 500,

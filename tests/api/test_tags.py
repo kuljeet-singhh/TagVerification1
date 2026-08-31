@@ -17,8 +17,13 @@ async def test_tags_catalog(client, api_key: str) -> None:
     assert response.status_code == 200
 
     body = response.json()
-    assert body["count"] == len(body["tags"]) == 20
+    # Deliberately NOT pinned to a number. The catalog is editable now — `dooh export-packs`
+    # writes it from content_tags — so asserting "== 20" would turn every legitimate tag into
+    # a failing test, and the failure message would be a bare count mismatch that named
+    # neither the tag nor the reason.
+    assert body["count"] == len(body["tags"]) > 0
     assert set(body["tags"][0]) == {"slug", "label", "description", "calibrated"}
+    assert len({t["slug"] for t in body["tags"]}) == body["count"], "duplicate slug in catalog"
 
 
 @needs_db

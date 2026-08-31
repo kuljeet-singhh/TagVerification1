@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     # Absent means /admin refuses access rather than opening it. See tagverify/auth/admin.py.
     admin_password: str | None = None
 
+    # Shared secret for pushing a pack into the running model (`dooh push-packs`). Must match
+    # RELOAD_SECRET in the model tier's environment. Absent means publishing is refused, on
+    # both sides — HF_TOKEN is read-scoped and already deployed in two places, so it cannot be
+    # what guards a mutating endpoint.
+    reload_secret: str | None = None
+
     log_level: str = "INFO"
 
     # The playground carries no API key by design (see tagverify/web/playground.py), so it is

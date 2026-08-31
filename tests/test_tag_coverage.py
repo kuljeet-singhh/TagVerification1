@@ -31,6 +31,7 @@ is the tag saying "checked, nothing here" about its own canonical example.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -68,7 +69,43 @@ GOLDEN: dict[str, str] = {
     "revealing_clothing": "Bikini.jpg",
 }
 
-ALL_TAGS = sorted(GOLDEN)
+def _catalog_slugs() -> list[str]:
+    """
+    The live catalog, read from the pack file rather than from GOLDEN above.
+
+    GOLDEN used to be the list, which made it a SECOND hard-coded copy of the twenty tags with
+    nothing cross-checking it against the first. Adding a tag left it silently short: the new
+    tag was never exercised, and nothing said so. Now the catalog is authoritative and GOLDEN
+    is only the image map, so a tag without a canonical image is reported (below) instead of
+    quietly skipped.
+    """
+    packs = ROOT / "inference/packs.json"
+    if not packs.exists():  # pragma: no cover - packs.json is checked in
+        return sorted(GOLDEN)
+    return sorted(tag["slug"] for tag in json.loads(packs.read_text())["tags"])
+
+
+#: Every tag, sent on every analyze call — that is what the DOOH backend does, and extra tags
+#: cost nothing because the logits already cover the whole prompt table.
+ALL_TAGS = _catalog_slugs()
+
+#: The subset we can actually assert on. A tag with no canonical image cannot be checked.
+COVERED_TAGS = [slug for slug in ALL_TAGS if slug in GOLDEN]
+
+#: Named so a new tag shows up as a visible gap rather than as silence.
+UNCOVERED_TAGS = [slug for slug in ALL_TAGS if slug not in GOLDEN]
+
+
+def test_every_catalog_tag_has_a_canonical_image() -> None:
+    """
+    Not a model test — a bookkeeping one. It fails the moment someone adds a tag without
+    giving it a golden image, which is the point at which the coverage tests below would
+    otherwise start quietly covering less than they claim.
+    """
+    assert not UNCOVERED_TAGS, (
+        f"no canonical image mapped for {UNCOVERED_TAGS}. Add an entry to GOLDEN and an image "
+        f"under inference/eval/<slug>/pos/, or the tag ships unexercised."
+    )
 
 
 def golden_path(slug: str) -> Path:
@@ -119,7 +156,7 @@ def verdict_for(body: dict, slug: str) -> dict:
 
 @needs_db
 @needs_inference
-@pytest.mark.parametrize("slug", ALL_TAGS)
+@pytest.mark.parametrize("slug", COVERED_TAGS)
 async def test_every_tag_detects_its_own_content(client, api_key: str, slug: str) -> None:
     body = await analyze(client, api_key, load(slug), f"{slug}.jpg")
     verdict = verdict_for(body, slug)
@@ -132,7 +169,7 @@ async def test_every_tag_detects_its_own_content(client, api_key: str, slug: str
 
 @needs_db
 @needs_inference
-@pytest.mark.parametrize("slug", ALL_TAGS)
+@pytest.mark.parametrize("slug", COVERED_TAGS)
 async def test_an_image_verdict_carries_no_frame_reference(
     client, api_key: str, slug: str
 ) -> None:
@@ -147,7 +184,7 @@ async def test_an_image_verdict_carries_no_frame_reference(
 
 @needs_db
 @needs_inference
-@pytest.mark.parametrize("slug", ALL_TAGS)
+@pytest.mark.parametrize("slug", COVERED_TAGS)
 async def test_every_tag_detects_content_in_one_scene_of_a_video(
     client, api_key: str, slug: str
 ) -> None:

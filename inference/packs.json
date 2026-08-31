@@ -22,11 +22,22 @@
     "  thresholds - PROVISIONAL. Real values come from calibrate.py against labelled images.",
     "               Do not trust these numbers until calibration has run.",
     "",
-    "Adding a tag = editing this file. Never touch Python."
+    "GENERATED FILE - do not hand-edit.",
+    "",
+    "The tag catalog lives in Postgres (content_tags). This file is written from it by",
+    "`dooh export-packs` and read by the detector at import, so a hand edit here is",
+    "silently reverted by the next export. Add or change a tag in /admin?tab=tags, then:",
+    "",
+    "    dooh export-packs --push   # rewrites this file AND publishes it into the",
+    "                               # running model. Prompts are encoded once, at",
+    "                               # import, so an export alone changes nothing.",
+    "",
+    "The authoring rules above still apply -- they are what the admin form checks against.",
+    "Everything OUTSIDE the `tags` array (this comment, prompt_template,",
+    "shared_distractors, defaults) is preserved verbatim by the export and is still",
+    "edited by hand here."
   ],
-
   "prompt_template": "This is a photo of {}.",
-
   "shared_distractors": [
     "a plain empty background",
     "an abstract colourful pattern",
@@ -35,11 +46,9 @@
     "a cloudy sky",
     "a plain brick wall"
   ],
-
   "defaults": {
-    "threshold_low": 0.30,
+    "threshold_low": 0.3,
     "threshold_high": 0.55,
-
     "//sigmoid_floor": [
       "Weak backstop only -- NOT a primary gate. Measured on real photos:",
       "true positives ranged 0.028 (beer) to 0.902 (cigarette), while true",
@@ -49,10 +58,8 @@
       "images, which is what keeps softmax honest. Leave this low."
     ],
     "sigmoid_floor": 0.005,
-
     "escalate": true
   },
-
   "tags": [
     {
       "slug": "alcohol",
@@ -91,7 +98,12 @@
         "a pizza on a wooden board",
         "a cafe table with pastries and coffee"
       ],
-      "detect_objects": ["beer bottle", "wine glass", "liquor bottle", "beer can"]
+      "detect_objects": [
+        "beer bottle",
+        "wine glass",
+        "liquor bottle",
+        "beer can"
+      ]
     },
     {
       "slug": "tobacco_smoking",
@@ -115,7 +127,12 @@
         "a person exhaling in cold air",
         "a rolled up piece of paper"
       ],
-      "detect_objects": ["cigarette", "cigarette pack", "cigar", "hookah"]
+      "detect_objects": [
+        "cigarette",
+        "cigarette pack",
+        "cigar",
+        "hookah"
+      ]
     },
     {
       "slug": "vaping",
@@ -136,7 +153,10 @@
         "a small power bank",
         "a bottle of eye drops"
       ],
-      "detect_objects": ["vape pen", "e-cigarette"]
+      "detect_objects": [
+        "vape pen",
+        "e-cigarette"
+      ]
     },
     {
       "slug": "gym_fitness",
@@ -160,7 +180,12 @@
         "a person walking in a park",
         "a swimming pool"
       ],
-      "detect_objects": ["dumbbell", "barbell", "treadmill", "weight plate"]
+      "detect_objects": [
+        "dumbbell",
+        "barbell",
+        "treadmill",
+        "weight plate"
+      ]
     },
     {
       "slug": "protein_supplements",
@@ -195,7 +220,11 @@
         "a prescription medicine bottle",
         "a tub of ice cream"
       ],
-      "detect_objects": ["protein powder tub", "shaker bottle", "protein bar"]
+      "detect_objects": [
+        "protein powder tub",
+        "shaker bottle",
+        "protein bar"
+      ]
     },
     {
       "slug": "gambling",
@@ -243,7 +272,12 @@
         "an advertising poster with large bold text",
         "a retail sale poster with big discount lettering"
       ],
-      "detect_objects": ["poker chip", "slot machine", "playing cards", "dice"]
+      "detect_objects": [
+        "poker chip",
+        "slot machine",
+        "playing cards",
+        "dice"
+      ]
     },
     {
       "slug": "junk_food",
@@ -267,7 +301,12 @@
         "a glass of green smoothie",
         "raw vegetables on a chopping board"
       ],
-      "detect_objects": ["burger", "pizza", "french fries", "chocolate bar"]
+      "detect_objects": [
+        "burger",
+        "pizza",
+        "french fries",
+        "chocolate bar"
+      ]
     },
     {
       "slug": "sugary_drinks",
@@ -288,7 +327,11 @@
         "a bottle of beer",
         "a coconut water"
       ],
-      "detect_objects": ["soda can", "soft drink bottle", "energy drink can"]
+      "detect_objects": [
+        "soda can",
+        "soft drink bottle",
+        "energy drink can"
+      ]
     },
     {
       "slug": "pharma_medicine",
@@ -310,7 +353,12 @@
         "a cosmetic serum bottle",
         "a bottle of hand sanitiser"
       ],
-      "detect_objects": ["pill", "blister pack", "syringe", "medicine bottle"]
+      "detect_objects": [
+        "pill",
+        "blister pack",
+        "syringe",
+        "medicine bottle"
+      ]
     },
     {
       "slug": "beauty_cosmetics",
@@ -332,7 +380,11 @@
         "a set of art paintbrushes",
         "a bottle of cleaning spray"
       ],
-      "detect_objects": ["lipstick", "perfume bottle", "cosmetic jar"]
+      "detect_objects": [
+        "lipstick",
+        "perfume bottle",
+        "cosmetic jar"
+      ]
     },
     {
       "slug": "jewellery",
@@ -344,7 +396,13 @@
         "gold bangles and bracelets",
         "diamond earrings on velvet",
         "a luxury wristwatch",
-        "a jewellery shop display case"
+        "a jewellery shop display case",
+        "jewellery worn from the hairline onto the forehead",
+        "decorative jewellery across the forehead/hairline",
+        "side-head/temple jewellery",
+        "chains decorated with beads, stones, pearls, or metal ornaments",
+        "pins with gemstones, pearls, gold/silver detailing",
+        "jewellery chains/ornaments attached along a braid"
       ],
       "negatives": [
         "a plastic toy ring",
@@ -352,9 +410,23 @@
         "a steel washer and bolts",
         "a glass paperweight",
         "a coin collection",
-        "a curtain with metal rings"
+        "a curtain with metal rings",
+        "Plain hair bands",
+        "Regular rubber bands",
+        "Basic hair clips",
+        "Plain bobby pins",
+        "Plastic hair claws",
+        "Ordinary barrettes",
+        "Fabric headbands",
+        "Plain hair ties",
+        "Functional hair accessories without jewellery/decorative elements"
       ],
-      "detect_objects": ["ring", "necklace", "earring", "wristwatch"]
+      "detect_objects": [
+        "ring",
+        "necklace",
+        "earring",
+        "wristwatch"
+      ]
     },
     {
       "slug": "automotive",
@@ -376,7 +448,12 @@
         "a wheelbarrow",
         "an aeroplane on a runway"
       ],
-      "detect_objects": ["car", "motorcycle", "tyre", "scooter"]
+      "detect_objects": [
+        "car",
+        "motorcycle",
+        "tyre",
+        "scooter"
+      ]
     },
     {
       "slug": "real_estate",
@@ -398,7 +475,11 @@
         "a school classroom",
         "a warehouse interior"
       ],
-      "detect_objects": ["apartment building", "house", "floor plan"]
+      "detect_objects": [
+        "apartment building",
+        "house",
+        "floor plan"
+      ]
     },
     {
       "slug": "fashion_apparel",
@@ -420,7 +501,12 @@
         "a bath towel",
         "a hospital gown"
       ],
-      "detect_objects": ["shoe", "handbag", "dress", "t-shirt"]
+      "detect_objects": [
+        "shoe",
+        "handbag",
+        "dress",
+        "t-shirt"
+      ]
     },
     {
       "slug": "restaurant_dining",
@@ -441,7 +527,11 @@
         "a picnic on grass",
         "an empty dining table at home"
       ],
-      "detect_objects": ["plate of food", "restaurant table", "chef"]
+      "detect_objects": [
+        "plate of food",
+        "restaurant table",
+        "chef"
+      ]
     },
     {
       "slug": "mobile_electronics",
@@ -463,7 +553,12 @@
         "a car stereo",
         "a wall mirror"
       ],
-      "detect_objects": ["smartphone", "laptop", "television", "headphones"]
+      "detect_objects": [
+        "smartphone",
+        "laptop",
+        "television",
+        "headphones"
+      ]
     },
     {
       "slug": "travel_tourism",
@@ -485,7 +580,12 @@
         "a parking garage",
         "a shopping mall entrance"
       ],
-      "detect_objects": ["suitcase", "aeroplane", "beach", "hotel pool"]
+      "detect_objects": [
+        "suitcase",
+        "aeroplane",
+        "beach",
+        "hotel pool"
+      ]
     },
     {
       "slug": "education",
@@ -507,7 +607,12 @@
         "a daycare play area",
         "a coworking space"
       ],
-      "detect_objects": ["blackboard", "textbook", "graduation cap", "school bag"]
+      "detect_objects": [
+        "blackboard",
+        "textbook",
+        "graduation cap",
+        "school bag"
+      ]
     },
     {
       "slug": "banking_finance",
@@ -529,7 +634,11 @@
         "a hotel reception desk",
         "a gift voucher"
       ],
-      "detect_objects": ["credit card", "banknote", "atm"]
+      "detect_objects": [
+        "credit card",
+        "banknote",
+        "atm"
+      ]
     },
     {
       "slug": "revealing_clothing",
@@ -555,6 +664,103 @@
       "escalate": true,
       "//sigmoid_floor": "Slightly stricter than default: a false 'revealing' flag on a normal creative is an expensive mistake, so demand a bit more absolute resemblance.",
       "sigmoid_floor": 0.02
+    },
+    {
+      "slug": "coffee_shop",
+      "label": "Coffee shop",
+      "description": "Cafes, baristas, espresso bars and coffee being served.",
+      "positives": [
+        "a coffee shop",
+        "a cafe serving coffee",
+        "a barista making coffee",
+        "a cup of coffee on a cafe table",
+        "a coffee counter with espresso machines",
+        "people drinking coffee in a cafe"
+      ],
+      "//negatives": "Tea and home kitchens are the near misses: a mug on a table reads as cafe without a counter or barista in frame. Bar counters added because the counter-with-machines positive matches any service counter.",
+      "negatives": [
+        "a restaurant without coffee service",
+        "a tea shop",
+        "a grocery store coffee aisle",
+        "a kitchen with a coffee maker",
+        "a cup of tea on a table",
+        "a bakery without a cafe area",
+        "a bar counter serving alcohol"
+      ]
+    },
+    {
+      "slug": "saloon",
+      "label": "Saloon",
+      "description": "A western-style bar or tavern, typically featuring wooden interiors, a bar counter, whiskey bottles, and a classic Old West atmosphere.",
+      "positives": [
+        "a hair salon",
+        "a beauty salon",
+        "a barber shop",
+        "a hairstylist cutting hair",
+        "a person getting a haircut in a salon",
+        "a salon chair with a customer",
+        "a hair washing station in a salon",
+        "a salon with mirrors, styling chairs, and hair products"
+      ],
+      "negatives": [
+        "a makeup store selling cosmetics",
+        "a spa or massage room",
+        "a nail salon with manicure tables only",
+        "a bathroom with a mirror and sink",
+        "a clothing boutique",
+        "a beauty products shelf in a supermarket",
+        "a person combing hair at home",
+        "a hospital or medical treatment room"
+      ]
+    },
+    {
+      "slug": "dog",
+      "label": "dog",
+      "description": "dog",
+      "positives": [
+        "a dog",
+        "a pet dog sitting outdoors",
+        "a dog running in a park",
+        "a dog playing with a ball",
+        "a dog sitting on a couch",
+        "a dog being walked on a leash",
+        "a puppy playing on the floor"
+      ],
+      "negatives": [
+        "a wolf in the wild",
+        "a fox in a forest",
+        "a cat sitting outdoors",
+        "a stuffed toy dog",
+        "a dog statue",
+        "a coyote in the wild",
+        "a hyena in a zoo",
+        "a large dog-shaped shadow"
+      ]
+    },
+    {
+      "slug": "cat",
+      "label": "cat",
+      "description": "A cat is a small domesticated animal commonly kept as a pet, typically recognized by its four legs, fur, pointed ears, whiskers, and long tail.",
+      "positives": [
+        "a cat",
+        "a pet cat sitting indoors",
+        "a cat sitting on a couch",
+        "a cat playing with a toy",
+        "a cat sleeping on a bed",
+        "a kitten playing on the floor",
+        "a cat eating from a bowl",
+        "a cat sitting outdoors"
+      ],
+      "negatives": [
+        "a dog sitting indoors",
+        "a fox in the wild",
+        "a tiger in a zoo",
+        "a stuffed toy cat",
+        "a cat statue",
+        "a wild lynx in a forest",
+        "a leopard in the wild",
+        "a person wearing a cat costume"
+      ]
     }
   ]
 }

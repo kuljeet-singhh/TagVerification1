@@ -31,9 +31,9 @@
         <span class="eyebrow">API reference</span>
         <h1>Tag Verification API</h1>
         <p>
-          REST over HTTPS, JSON or multipart in, JSON out. One endpoint does the work; the
-          other three tell you what the service knows and how you are doing against your
-          limit.
+          REST over HTTPS, JSON or multipart in, JSON out. One endpoint does the scoring;
+          the rest tell you what the service knows, how you are doing against your limit,
+          and &mdash; for an admin &mdash; let you edit the tag catalog itself.
         </p>
       </div>
 
@@ -328,6 +328,285 @@ for (const verdict of results) {
         </p>
       </section>
 
+      <section id="tags">
+        {{ heading('tags', 'Managing tags') }}
+
+        <p>
+          The catalog is editable. These four endpoints are the JSON equivalent of the Tags
+          tab in <a href="/admin">Admin</a> &mdash; create a tag, rewrite its phrases, retire
+          it, or read the catalog as stored rather than as the model currently has it.
+        </p>
+
+        <div class="callout callout-warn">
+          <h3>Writing a tag does not publish it</h3>
+          <p>
+            The model loads every prompt once, at startup. A tag written here is a database
+            row and nothing more until the pack is published &mdash; which is why every write
+            below answers <code>"pending_publish": true</code>.
+          </p>
+          <p>
+            Publish with <code class="mono">dooh export-packs --push</code>. That writes the
+            pack and pushes it into the running model, which re-encodes the prompts in place.
+            No restart. Until you do, <a href="#other"><code>GET /api/v1/tags</code></a> and
+            every <code>analyze</code> call keep using the old catalog &mdash; that endpoint is
+            served from what the model holds, not from what you just wrote.
+          </p>
+        </div>
+
+        <h3>Authentication is different here</h3>
+        <p>
+          Two ways in, for two kinds of caller. <strong>The ordinary analyze key is refused</strong>
+          &mdash; there is one such key and it belongs to the client asking &ldquo;does this
+          image contain alcohol?&rdquo;, and letting that key also rewrite what
+          <em>alcohol means</em> would be the wrong boundary.
+        </p>
+        <dl class="fields">
+          <dt>A scoped key</dt>
+          <dd>For a service, such as DOOH admin. Send it in <code>x-api-key</code> exactly like
+              any other key. It must carry the <code>tags:write</code> scope, which is set when
+              the key is issued &mdash; tick <em>&ldquo;Can edit the tag catalog&rdquo;</em> in
+              <a href="/admin">Admin</a>, or pass <code class="mono">--tags-write</code> to
+              <code class="mono">dooh create-key</code>. <strong>Issue a separate key</strong>
+              rather than adding the scope to one already used for analysing. No CSRF header is
+              needed: that defends a browser holding an ambient cookie, which this is not.</dd>
+
+          <dt>An admin session</dt>
+          <dd>For a person in a browser, and what <a href="/admin">Admin</a> itself uses: the
+              <code>dooh_admin</code> cookie plus an <code>X-CSRF-Token</code> header on
+              anything that writes. A script can derive both from <code>ADMIN_PASSWORD</code>
+              &mdash; both are HMAC-SHA256 over that secret, and the CSRF token is a fixed
+              value, not a per-session nonce &mdash; but prefer a scoped key, which grants only
+              this and not key issuance or threshold edits.</dd>
+        </dl>
+        <p>
+          Deriving the session credentials by hand, if you need to:
+        </p>
+
+{{ code('tags-auth', 'python', 'import hashlib, hmac, time
+
+PASSWORD = "..."                       # ADMIN_PASSWORD
+
+issued = str(int(time.time() * 1000))  # cookie is valid for 7 days
+cookie = issued + "." + hmac.new(PASSWORD.encode(), issued.encode(), hashlib.sha256).hexdigest()
+csrf   = hmac.new(PASSWORD.encode(), b"csrf", hashlib.sha256).hexdigest()
+
+headers = {"Cookie": f"dooh_admin={cookie}", "X-CSRF-Token": csrf}') }}
+
+        <p class="small muted">
+          With <code>ADMIN_PASSWORD</code> unset the session route has nothing to authenticate
+          against and returns <code>FORBIDDEN</code> rather than opening. A scoped key still
+          works &mdash; the two routes are independent.
+        </p>
+
+        <h3>Create a tag</h3>
+        <div class="endpoint">
+          <span class="method">POST</span>
+          <span class="endpoint-path">/api/v1/tags</span>
+          <span class="note">admin session</span>
+        </div>
+
+        <dl class="fields">
+          <dt>slug<span class="req">required</span></dt>
+          <dd>Lowercase letters, digits and underscores, starting with a letter
+              (<code>^[a-z][a-z0-9_]*$</code>). Trimmed and lowercased for you. It is
+              <strong>permanent</strong> &mdash; it keys the tag&rsquo;s eval images and its
+              measured thresholds, and it cannot be changed later.</dd>
+
+          <dt>label<span class="req">required</span></dt>
+          <dd>What a screen owner sees when choosing what to block.</dd>
+
+          <dt>description<span class="req">required</span></dt>
+          <dd>One line, also shown to a screen owner.</dd>
+
+          <dt>positives<span class="req">required</span></dt>
+          <dd>At least 5 phrases describing what you are hunting. 8 or more is where tags
+              start behaving.</dd>
+
+          <dt>negatives<span class="req">required</span></dt>
+          <dd>At least 6 phrases naming what gets <em>mistaken</em> for it. These do most of
+              the work &mdash; see <a href="#tags-writing">below</a>.</dd>
+
+          <dt>rationale</dt>
+          <dd>Why these negatives. Optional, and worth writing: it is what stops the next
+              person undoing a fix they cannot see.</dd>
+
+          <dt>sigmoid_floor</dt>
+          <dd>Between 0 and 1. Leave it out. It is measured by calibration, not authored, and
+              omitting it on an update preserves whatever was measured.</dd>
+        </dl>
+
+        <p>
+          Returns <code>201</code> with the stored row, plus <code>warnings</code> and
+          <code>pending_publish</code>. <strong>Warnings never block a save</strong> &mdash;
+          they are advice about phrasing, and an empty list means none.
+        </p>
+
+{{ code('tags-create', 'shell', 'curl -X POST https://your-app/api/v1/tags \\
+  -H "Cookie: dooh_admin=$COOKIE" \\
+  -H "X-CSRF-Token: $CSRF" \\
+  -H "Content-Type: application/json" \\
+  -d \'{
+        "slug": "pet_supplies",
+        "label": "Pet supplies",
+        "description": "Pet food, toys and accessories.",
+        "positives": ["a bag of dog food", "a cat sitting in a pet carrier", "..."],
+        "negatives": ["a bag of rice", "a wild animal in a forest", "..."]
+      }\'') }}
+
+{{ code('tags-create-response', 'json', '{
+  "slug": "pet_supplies",
+  "label": "Pet supplies",
+  "description": "Pet food, toys and accessories.",
+  "positives": ["a bag of dog food", "..."],
+  "negatives": ["a bag of rice", "..."],
+  "rationale": null,
+  "sigmoid_floor": null,
+  "status": "active",
+  "updated_at": "2026-08-26T09:41:12.402831+00:00",
+  "updated_by": "admin",
+
+  // Advice, not errors. The tag saved.
+  "warnings": ["Only 6 positives. 8+ is where tags start behaving."],
+
+  // Written, not live. Run `dooh export-packs --push`.
+  "pending_publish": true
+}') }}
+
+        <h3>Update a tag</h3>
+        <div class="endpoint">
+          <span class="method method-patch">PATCH</span>
+          <span class="endpoint-path">/api/v1/tags/{slug}</span>
+          <span class="note">admin session</span>
+        </div>
+        <p>
+          <strong>Despite the verb, this is a full replace, not a partial update.</strong>
+          Every field <code>POST</code> requires must be sent; anything you omit is not
+          preserved. The one exception is <code>sigmoid_floor</code>, which is kept when
+          absent because it is measured rather than typed.
+        </p>
+        <p>
+          The slug comes from the path and cannot be changed &mdash; a rename would strand the
+          tag&rsquo;s eval images and thresholds. Returns <code>200</code> with the same body
+          shape as create. <code>404</code> if the slug does not exist.
+        </p>
+
+        <h3>Retire a tag</h3>
+        <div class="endpoint">
+          <span class="method method-delete">DELETE</span>
+          <span class="endpoint-path">/api/v1/tags/{slug}</span>
+          <span class="note">admin session</span>
+        </div>
+        <p>
+          <strong>Retires, never deletes.</strong> Returns <code>200</code> (not
+          <code>204</code>) with the row, now <code>"status": "retired"</code>. Safe to repeat.
+        </p>
+        <p>
+          The row survives so the slug keeps its labelled eval images and measured thresholds,
+          and a screen that still blocks the tag keeps working until it is next saved. Two
+          consequences worth knowing: a retired tag&rsquo;s <em>phrases</em> become free for
+          another tag to use, but its <em>slug</em> stays reserved &mdash; so
+          <code>POST</code>ing it again returns <code>400</code>, not a fresh tag.
+        </p>
+
+        <h3>Publish</h3>
+        <div class="endpoint">
+          <span class="method">POST</span>
+          <span class="endpoint-path">/api/v1/tags/publish</span>
+          <span class="note">admin session or <code>tags:write</code></span>
+        </div>
+        <p>
+          Makes every written tag live, with no restart. Exports the catalog to the pack file
+          and pushes those bytes into the running model, which re-encodes its prompts in place.
+          The remote half of <code class="mono">dooh export-packs --push</code>, and the same
+          code underneath.
+        </p>
+        <p>
+          <strong>It publishes the whole catalog, not one tag.</strong> A pack is a single
+          artifact with a single fingerprint, so there is no such thing as publishing one tag
+          &mdash; and this will take everyone&rsquo;s pending edits live, not just yours.
+        </p>
+        <p>
+          Not cheap, so batch your edits and publish once: re-encoding takes seconds and moves
+          <code>packs_version</code>, which makes every tag report
+          <code>calibrated: false</code> until it is measured again.
+        </p>
+
+{{ code('tags-publish-response', 'json', '{
+  "packs_version": "2d9b089ea283",   // the NEW fingerprint; every verdict is stamped with it
+  "count": 22,
+  "tags": ["alcohol", "automotive", "..."]   // what the model now actually holds
+}') }}
+
+        <p class="small muted">
+          Returns <code>409 NOT_CONFIGURED</code> when no shared secret is set between the two
+          tiers &mdash; publishing is off rather than open, and retrying will not help.
+          <code>503</code> if the model is still waking, which is worth retrying.
+        </p>
+
+        <h3>Read the catalog as stored</h3>
+        <div class="endpoint">
+          <span class="method method-get">GET</span>
+          <span class="endpoint-path">/api/v1/tags/managed</span>
+          <span class="note">admin session</span>
+        </div>
+        <p>
+          Every row including retired ones, with the prompts. This is
+          <strong>not</strong> the same as <a href="#other"><code>GET /api/v1/tags</code></a>:
+          that one is the public catalog as the <em>model</em> currently has it and never
+          exposes prompts, this one is the database. When they disagree, something is written
+          but not published.
+        </p>
+
+{{ code('tags-managed-response', 'json', '{
+  "count": 21,
+  "tags": [{ "slug": "alcohol", "label": "Alcohol", "positives": ["..."], "negatives": ["..."],
+             "status": "active", "updated_at": "...", "updated_by": "admin" }]
+}') }}
+
+        <h3 id="tags-writing">What makes a tag work</h3>
+        <p>
+          The phrases are the whole of the detection. The model is zero-shot: it compares the
+          image against these words and nothing else, so a tag is only as good as its wording.
+          Two rules, both measured:
+        </p>
+        <ul class="callout-list">
+          <li>
+            <strong>Mirror the phrasing.</strong> If a positive says &ldquo;a scoop of X&rdquo;,
+            a negative should say &ldquo;a scoop of Y&rdquo;. With only
+            &ldquo;a tin of baby formula&rdquo; as a negative, infant formula scored
+            <strong>0.709</strong> for <code>protein_supplements</code> &mdash; wrongly present.
+            Adding &ldquo;a scoop of baby formula milk powder&rdquo; dropped it to
+            <strong>0.224</strong> while real whey stayed at <strong>0.999</strong>.
+          </li>
+          <li>
+            <strong>Name the confusable neighbour, not random things.</strong> The model
+            already scores a mountain near zero for alcohol; a negative that is obviously
+            different teaches it nothing. Half your negatives should be things a careless human
+            might mislabel.
+          </li>
+        </ul>
+        <p class="small muted">
+          A phrase already used as another active tag&rsquo;s positive is refused. Two tags
+          sharing a phrase lose it from both their comparison pools, which weakens the
+          competition each relies on. The catalog is also capped at 30 active tags, because
+          every analyze call sends the whole catalog.
+        </p>
+
+        <h3>Errors</h3>
+        <p>
+          Validation failures return <code>400 BAD_REQUEST</code> and the
+          <code>message</code> is written to be shown to whoever typed it &mdash; e.g.
+          <em>&ldquo;A tag needs at least 5 positives &mdash; this one has 4.&rdquo;</em>
+          Missing session or CSRF token is <code>403 FORBIDDEN</code>; an unknown slug on
+          update or retire is <code>404 NOT_FOUND</code>. See <a href="#errors">Errors</a>.
+        </p>
+        <p class="small muted">
+          Called with a scoped key, these count against that key&rsquo;s rate limit like any
+          other request &mdash; authenticating a key always charges it. Called with an admin
+          session they are not limited at all.
+        </p>
+      </section>
+
       <section id="other">
         {{ heading('other', 'Other endpoints') }}
 
@@ -398,6 +677,7 @@ for (const verdict of results) {
         <li><a href="#analyze">Analyse a creative</a></li>
         <li><a href="#decisions">How a verdict is decided</a></li>
         <li><a href="#calibration">Calibration</a></li>
+        <li><a href="#tags">Managing tags</a></li>
         <li><a href="#other">Other endpoints</a></li>
         <li><a href="#errors">Errors</a></li>
       </ul>

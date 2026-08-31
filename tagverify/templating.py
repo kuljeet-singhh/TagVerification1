@@ -22,6 +22,8 @@ from fastapi import Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from tagverify.tags.catalog import publish_state
+
 PACKAGE_DIR = Path(__file__).parent
 TEMPLATE_DIR = PACKAGE_DIR / "templates"
 STATIC_DIR = PACKAGE_DIR / "static"
@@ -136,6 +138,10 @@ templates.env.globals.update(
     asset=asset,
     BANDS=BANDS,
     now=lambda: datetime.now(UTC),
+    # "live" / "absent" / "edited" / None for one tag. A global rather than duplicated Jinja
+    # because the tags panel and the single-row HTMX swap must agree, and because the answer
+    # depends on a fingerprint neither template can compute.
+    publish_state=publish_state,
 )
 templates.env.filters.update(
     relative_time=relative_time,

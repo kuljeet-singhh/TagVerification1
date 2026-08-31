@@ -21,6 +21,14 @@ There is **no Dockerfile**. `sdk: gradio` in the front-matter above tells Huggin
 Face to install `requirements.txt` and run `app.py`. You never need Docker
 locally or in CI.
 
+**That front-matter is build config, not decoration — do not delete it.** Without
+it the Space will not build. This file is the Space's manifest as well as its
+landing page: `git subtree push --prefix=inference space main` puts it at the
+Space root, which is where HF looks for it.
+
+This directory is one half of a larger repo. For the service that calls this one,
+and for setting the whole thing up, see [`../README.md`](../README.md).
+
 ## Run locally
 
 ```bash
@@ -48,16 +56,36 @@ Exit codes: `0` pass, `1` a verdict was wrong, `2` images couldn't be fetched
 
 ## API
 
-Three endpoints, all via Gradio's queue protocol
+Four endpoints, all via Gradio's queue protocol
 (`POST /gradio_api/call/<name>` → `{event_id}`, then
-`GET /gradio_api/call/<name>/<event_id>` for an SSE result). From TypeScript,
-use `@gradio/client` rather than hand-rolling that.
+`GET /gradio_api/call/<name>/<event_id>` for an SSE result). Do not hand-roll
+that: the caller in this project is `tagverify/scoring/client.py`, which uses
+Python's `gradio_client` and explains at the top why it is worth the dependency.
 
 | endpoint | in | out |
 |---|---|---|
 | `analyze` | base64 image string, `string[]` tags | per-tag verdicts |
 | `health` | — | model + packs version, tag list |
 | `tags` | — | tag catalog with descriptions |
+| `reload_packs` | pack JSON, shared secret | swaps the live prompt table — no restart |
+
+### `reload_packs` needs `RELOAD_SECRET` on this Space
+
+It is the publish mechanism: it replaces the encoded prompt table in memory, so a
+new or edited tag goes live without a rebuild.
+
+It **defaults closed**. `gr.api` endpoints carry no authorization of their own, and
+this Space is shielded only by HF privacy plus a read-scoped token that is already
+deployed to the web tier and to CI — so the one mutating endpoint needs a secret of
+its own. Set `RELOAD_SECRET` at **Settings → Variables and secrets**, to the same
+value the web tier has. Unset, every publish is refused with:
+
+```
+reload_packs is disabled: RELOAD_SECRET is not set on this Space
+```
+
+It is read from the environment at `app.py:198` and nowhere else. Rotate it on both
+sides at once, or publishing stops until they agree again.
 
 `analyze` takes **base64**, not an uploaded file, deliberately: it keeps the call
 to one round trip instead of Gradio's upload-then-submit dance.
@@ -66,7 +94,7 @@ to one round trip instead of Gradio's upload-then-submit dance.
 // POST /gradio_api/call/analyze  ->  {"data": ["<base64>", ["alcohol"]]}
 {
   "model": "google/siglip2-base-patch16-224",
-  "packs_version": "1a2db18ba940",
+  "packs_version": "<12 hex chars>",   // illustrative — read the live one from `health`
   "latency_ms": 612.4,
   "results": [{
     "tag": "alcohol",
@@ -94,7 +122,31 @@ list, because "unknown tag" and "content absent" must never look alike.
 
 ## Adding or changing a tag
 
-Edit **`packs.json`** only. Never touch Python.
+Through the admin UI at **`/admin?tab=tags`**, not by editing a file. `packs.json` is
+**generated** from the `content_tags` table by `dooh export-packs`, so a hand edit to it is
+silently reverted by the next export.
+
+That now covers the *whole* file. Everything outside the `tags` array -- `$comment`,
+`prompt_template`, `shared_distractors`, `defaults` -- lives in the `pack_header` table and is
+edited there, not here. `dooh seed-tags` imports it once, and after that `packs.json` is output,
+never input.
+
+Prompts are encoded once, at import — but that does **not** mean a restart. Publishing pushes
+the new pack into the running process:
+
+```bash
+dooh export-packs --push      # DB -> packs.json -> live, no restart
+```
+
+The file is written *before* it is pushed, deliberately: the model boots from whatever is on
+disk, so a push against a stale file would be undone the moment the process came back. Publishing
+this way keeps disk and memory agreeing.
+
+Still never touch Python. And note that adding a tag moves every *other* tag's scores
+slightly -- each tag is scored against every other tag's positives -- so `packs_version`
+changes and the whole catalog needs recalibrating, not just the new tag.
+
+The shape of a tag is unchanged:
 
 ```jsonc
 {

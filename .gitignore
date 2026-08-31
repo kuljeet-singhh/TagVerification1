@@ -35,3 +35,6 @@ inference/sweep.json
 # misc
 .DS_Store
 *.pem
+
+# runtime logs
+*.log

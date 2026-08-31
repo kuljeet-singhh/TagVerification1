@@ -155,6 +155,22 @@ def test_the_scorer_fingerprint_covers_the_scoring_code() -> None:
     assert scorer_version(packs, detector) == scorer_version(packs, detector)
 
 
+def test_the_fingerprint_is_the_same_from_a_path_or_from_bytes() -> None:
+    """
+    reload_packs hashes the pack it was HANDED, because on a reload the copy on disk is the
+    stale one. The two forms have to agree, or a pushed pack would fingerprint differently
+    from the identical file `dooh export-packs` wrote — and `dooh apply-calibration` refuses
+    on exactly that mismatch, so the calibration measured against it would become unusable.
+    """
+    from inference.versioning import scorer_version
+
+    packs = ROOT / "inference" / "packs.json"
+    detector = ROOT / "inference" / "detector.py"
+
+    assert scorer_version(packs.read_bytes(), detector) == scorer_version(packs, detector)
+    assert scorer_version(b'{"tags": []}', detector) != scorer_version(packs, detector)
+
+
 def test_the_versioning_module_has_no_dependencies() -> None:
     """Ships flat to the Space alongside banding.py, so it can only import the stdlib."""
     tree = ast.parse((ROOT / "inference" / "versioning.py").read_text())

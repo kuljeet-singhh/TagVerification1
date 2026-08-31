@@ -40,6 +40,8 @@ class AuthenticatedKey:
     name: str
     key_prefix: str
     rate_limit_per_min: int
+    #: Empty for an analyze-only key, which is every key issued before scopes existed.
+    scopes: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -60,7 +62,7 @@ AuthOutcome = AuthOk | AuthFailed
 _QUERY = text(
     """
     with k as (
-      select id, name, key_prefix, rate_limit_per_min
+      select id, name, key_prefix, rate_limit_per_min, scopes
       from api_keys
       where key_hash = :key_hash and revoked_at is null
     ),
@@ -76,7 +78,7 @@ _QUERY = text(
       where id in (select id from k)
       returning id
     )
-    select k.id, k.name, k.key_prefix, k.rate_limit_per_min,
+    select k.id, k.name, k.key_prefix, k.rate_limit_per_min, k.scopes,
            coalesce(bump.count, 1) as count
     from k left join bump on bump.api_key_id = k.id
     """
@@ -159,12 +161,16 @@ async def authenticate_and_charge(session: AsyncSession, presented: str | None) 
         name=str(row[1]),
         key_prefix=str(row[2]),
         rate_limit_per_min=int(row[3]),
+        # Tuple, not the list psycopg hands back: AuthenticatedKey is frozen-by-convention and
+        # a mutable scope set on an auth result is the kind of thing a later caller edits by
+        # accident. `or ()` covers a row written before the column existed.
+        scopes=tuple(row[4] or ()),
     )
     seconds_left = (window_start.timestamp() + 60) - now.timestamp()
 
     return AuthOk(
         key=key,
-        count=int(row[4]),
+        count=int(row[5]),  # shifted by scopes above — the select order is the contract
         limit=key.rate_limit_per_min,
         reset_after=max(1, math.ceil(seconds_left)),
     )

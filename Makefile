@@ -1,4 +1,4 @@
-.PHONY: install dev serve-lan test test-fast lint fmt typecheck check inference-smoke clean
+.PHONY: install dev serve-lan test test-fast lint fmt typecheck check inference-smoke clean migrate migrate-sql
 
 VENV := .venv
 PY   := $(VENV)/bin/python
@@ -52,6 +52,16 @@ serve-lan:
 
 test:
 	$(PY) -m pytest
+
+# Bring an EXISTING database up to date. A new one is provisioned from docs/schema.sql
+# instead — that file is the destination, these revisions are the route to it.
+migrate:
+	$(VENV)/bin/alembic upgrade head
+
+# What `migrate` WOULD run, as SQL, without touching anything. Worth reading before a
+# production run: a migration you have not read is a migration you are trusting blind.
+migrate-sql:
+	$(VENV)/bin/alembic upgrade head --sql
 
 # The decision rules alone. No database, no model, no network — the fastest useful signal
 # in the project, and the one to run while editing banding.py or aggregate.py.

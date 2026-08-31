@@ -352,6 +352,11 @@
   background: var(--accent); color: var(--accent-fg);
 }
 .method-get { background: var(--surface-3); color: var(--fg-muted); border: 1px solid var(--border-strong); }
+/* Writes read as writes. Without these, PATCH and DELETE inherit .method's accent fill and
+   look identical to POST, which is the one distinction a reader scanning an endpoint list
+   actually needs. Both use the existing band tokens, so they follow the theme. */
+.method-patch { background: var(--uncertain-bg); color: var(--uncertain-fg); border: 1px solid var(--uncertain-fg); }
+.method-delete { background: var(--present-bg); color: var(--present-fg); border: 1px solid var(--present-fg); }
 .endpoint-path {
   font-family: var(--font-mono); font-size: var(--t-sm); font-weight: 500; color: var(--fg);
 }
