@@ -31,12 +31,7 @@ from tagverify.analyze.run import AnalysisSuccess, run_analysis, write_audit
 from tagverify.auth.deps import playground_rate_limit
 from tagverify.db.session import get_session, session_scope
 from tagverify.scoring import registry
-from tagverify.scoring.client import (
-    InferenceError,
-    InferenceWarming,
-    cached_inference_health,
-    cached_tag_catalog,
-)
+from tagverify.scoring.base import InferenceError, InferenceWarming
 from tagverify.tags.catalog import list_tags
 from tagverify.tags.groups import group_tags
 from tagverify.templating import render
@@ -72,18 +67,6 @@ async def _shell_context() -> dict[str, Any]:
             "scorer_name": registry.name(),
         }
 
-    try:
-        health = await cached_inference_health()
-        return {
-            "packs_version": health.packs_version,
-            "model": health.model,
-            "health_class": "is-ok",
-            "scorer_name": "siglip",
-        }
-    except InferenceWarming:
-        return {"health_class": "is-warming", "scorer_name": "siglip"}
-    except Exception:  # noqa: BLE001
-        return {"health_class": "is-down", "scorer_name": "siglip"}
 
 
 async def _catalog_context(selected: list[str]) -> dict[str, Any]:
@@ -118,24 +101,6 @@ async def _catalog_context(selected: list[str]) -> dict[str, Any]:
             "selected": selected,
         }
 
-    try:
-        catalog = await cached_tag_catalog()
-    except InferenceWarming as exc:
-        return {"inference_down": True, "warming": True, "error": str(exc), "tag_groups": []}
-    except (InferenceError, Exception) as exc:  # noqa: BLE001
-        return {
-            "inference_down": True,
-            "warming": False,
-            "error": str(exc),
-            "local_hint": True,
-            "tag_groups": [],
-        }
-
-    return {
-        "inference_down": False,
-        "tag_groups": group_tags([tag.model_dump() for tag in catalog.tags]),
-        "selected": selected,
-    }
 
 
 def _requested_tags(request: Request) -> list[str]:

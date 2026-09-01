@@ -21,7 +21,6 @@ from sqlalchemy import text
 from tagverify.config import settings
 from tagverify.db.session import DatabaseNotConfigured, is_configured, session_scope
 from tagverify.scoring import registry
-from tagverify.scoring.client import InferenceWarming, inference_health
 from tagverify.tags.decide import RULE_VERSION, cached_thresholds, decision_version
 
 router = APIRouter()
@@ -51,7 +50,11 @@ async def _inference() -> dict[str, object]:
     """
     scorer = registry.module()
     if scorer is None:
-        return await _siglip()
+        return {
+            "ok": False, "warm": False, "warming": False,
+            "scorer": registry.describe(),
+            "error": f"SCORER={registry.name()!r} is not a scorer this build knows",
+        }
 
     # A VLM has no health endpoint worth calling: there is no process of ours to be warm or
     # cold, and probing the provider on every monitoring hit would bill us to learn something
@@ -88,27 +91,6 @@ async def _inference() -> dict[str, object]:
         "model": live.model,
         "packs_version": live.packs_version,
         "tags": len(live.tags),
-    }
-
-
-async def _siglip() -> dict[str, object]:
-    try:
-        health = await inference_health()
-    except InferenceWarming as exc:
-        # Distinct from a hard failure: the Space is asleep or loading, and will recover on
-        # its own. A dashboard should show this differently from "unreachable".
-        return {"ok": False, "warm": False, "warming": True, "error": str(exc)}
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "warm": False, "warming": False, "error": str(exc)}
-
-    return {
-        "ok": True,
-        "warm": True,
-        "scorer": "siglip",
-        "model": health.model,
-        "packs_version": health.packs_version,
-        "tags": len(health.tags),
-        "prompts": health.prompts,
     }
 
 

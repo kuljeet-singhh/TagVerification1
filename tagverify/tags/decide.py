@@ -1,21 +1,19 @@
 """
-Turn a raw score into a verdict, using thresholds from Postgres.
+Turn one raw row into a verdict.
 
-WHY WE RE-DECIDE HERE INSTEAD OF TRUSTING THE SPACE
----------------------------------------------------
-The Space carries provisional thresholds in packs.json so its own test UI can show something
-useful. But a threshold is only ever a comparison against a number that has already been
-computed — so applying it here, in the API tier, costs nothing and buys a lot: calibration
-results and hand-tuning take effect on the next request with no Space redeploy and no model
-reload.
+THE RULE USED TO LIVE SOMEWHERE ELSE, AND USED TO BE MUCH BIGGER
+----------------------------------------------------------------
+It was `inference/banding.py`: two cutoffs and an absolute-resemblance floor applied to a
+similarity score, shared with the SigLIP tier because that tier had to speak it too. All of
+that existed because a similarity means nothing on its own -- measured true positives ran
+from 0.028 to 0.902 -- so every tag needed calibrating before any verdict meant anything.
 
-The prompts cannot work this way (the Space must encode them into embeddings at startup),
-which is exactly why prompts live in git and thresholds live in the database.
+A reading model answers the question instead of scoring a resemblance to it, so `present`
+arrives decided and there is nothing left to band. What remains here is the tri-state
+passthrough, three confidence cutoffs for triage, and the staleness check that keeps
+`calibrated` honest.
 
-The banding rule itself is NOT written here. It is imported from inference/banding.py, the
-same function the Space and the calibration sweep use. See that file for why.
-
-`decide()` is pure — no database, no network — so it can be tested exhaustively. Loading
+`decide()` is pure -- no database, no network -- so it can be tested exhaustively. Loading
 thresholds is a separate concern, below.
 """
 
@@ -25,26 +23,36 @@ import hashlib
 import time
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import inference.banding
 import tagverify.analyze.video
-from inference.banding import Band, Confidence, DecidedBy, band_of, confidence_of
 from tagverify.db.models import TagThreshold
 
-#: Fingerprint of the banding rule this process loaded, read ONCE AT IMPORT. Deliberately.
+#: The three verdict vocabularies. They lived in inference/banding.py, which was shared with
+#: the SigLIP tier because that tier had to speak them too. Nothing else does now, and they
+#: are three Literals with no logic attached, so they come home to the module that owns the
+#: decision rather than being imported across a tier boundary that no longer exists.
+Band = Literal["present", "absent", "uncertain"]
+Confidence = Literal["high", "medium", "low"]
+#: A MECHANISM, not a vendor. "siglip" and "sigmoid_floor" are gone with the ranking model;
+#: the union stays open (`| str`) so a stored verdict written by either of them still parses.
+DecidedBy = Literal["vlm"]
+
+#: Fingerprint of the decision rule this process loaded, read ONCE AT IMPORT. Deliberately.
 #:
-#: This has to describe the rule THIS PROCESS IS RUNNING, not the file currently on disk.
-#: Re-reading per request would make a server that was started without `--reload` advertise a
-#: fingerprint for code it is not executing — worse than having none, because it would answer
-#: "is my change live?" with a confident yes. A stale process keeps its old fingerprint, which
-#: is exactly the signal wanted.
-RULE_VERSION = hashlib.sha256(
-    Path(inference.banding.__file__).read_bytes()
-).hexdigest()[:12]
+#: It hashed inference/banding.py, because that file WAS the rule: a score, two cutoffs and a
+#: floor. With the ranking model gone there is no score to band, and the rule is this module —
+#: the tri-state passthrough and the confidence cutoffs below. So it hashes this file.
+#:
+#: Read once, not per request. It has to describe the rule THIS PROCESS IS RUNNING, not the
+#: file currently on disk: re-reading would make a server started without `--reload` advertise
+#: a fingerprint for code it is not executing, which answers "is my change live?" with a
+#: confident yes. A stale process keeps its old fingerprint, which is exactly the signal
+#: wanted.
+RULE_VERSION = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
 
 #: Fingerprint of the FRAME SAMPLER this process loaded. Read once at import, same as above.
 #:
@@ -89,12 +97,9 @@ class Evidence:
     frame: FrameRef | None = None
 
 
-#: What decided a verdict. `inference/banding.py` owns the two SigLIP mechanisms and is left
-#: alone on purpose: its bytes are RULE_VERSION, so adding a member there would move
-#: `decision_version` for the SigLIP path too and re-key every cached verdict in this service
-#: AND in dooh-backend for a scorer that is not even switched on. It is also the one file that
-#: is git-subtree-pushed to the Space, which has no concept of a VLM. So the union is widened
-#: here, where the extra mechanism actually exists.
+#: Left open (`| str`) rather than narrowed to DecidedBy: `creative_tag_analyses` still holds
+#: verdicts written by "siglip" and "sigmoid_floor", and a stored row must keep parsing after
+#: the model that wrote it is gone. Retire, never delete, applies to values too.
 VerdictSource = DecidedBy | str
 
 
@@ -163,63 +168,64 @@ def decide(
     live_packs_version: str | None = None,
 ) -> Verdict:
     """
-    Decide one tag's verdict from the raw scores the model returned.
+    Turn one raw row into a verdict.
 
-    `raw` is a verdict dict from the inference service. We use only `score`, `sigmoid`,
-    `top_phrase` and `crop` from it — its own `present`/`band` are deliberately ignored,
-    because the Space decided those with the provisional thresholds baked into packs.json
-    rather than the tuned ones in Postgres.
+    THERE IS NO BANDING LEFT. SigLIP returned a similarity, and a similarity means nothing on
+    its own — measured true positives ran from 0.028 to 0.902 — so a verdict was two cutoffs
+    and an absolute-resemblance floor applied to it, and every tag needed calibrating before
+    any of it meant anything. A reading model answers the question, so `present` arrives
+    decided and this function's job is to carry it out unchanged.
 
-    `frame_index` / `timestamp_s` are attached by the video path before this runs; the Space
-    knows nothing about them. Each frame is decided INDEPENDENTLY here, and only then are the
-    per-frame verdicts collapsed — see tagverify/analyze/aggregate.py for why that order matters.
+    That is the whole shape of the change, and it is why `calibrated` survives while the
+    thresholds do not: there is nothing left to tune, but "has this tag ever been measured
+    against labelled data?" is still a question a caller must be able to ask (AGENTS.md
+    rule 4).
+
+    `frame_index` / `timestamp_s` are attached by the video path before this runs. Each frame
+    is decided INDEPENDENTLY here and only then collapsed — see analyze/aggregate.py for why
+    that order matters.
     """
     t = threshold or FALLBACK
 
-    # A VLM answered the question rather than scoring a resemblance to it, so there is no
-    # number to band and nothing to compare against a cutoff. Branch BEFORE the threshold
-    # work, not inside it: `band_of` would read a `sigmoid` that does not exist, and passing
-    # it a self-reported confidence would silently reinterpret a different quantity as a
-    # similarity. See tagverify/scoring/vlm.py.
-    #
-    # Staleness still applies below via `calibrated`, so AGENTS.md rule 4 is untouched: a tag
-    # nobody has run against the eval set still reports calibrated: false.
-    if raw.get("decided_by") == "vlm":
-        return _decide_vlm(raw, t, live_packs_version)
-
-    # A threshold is only meaningful for the prompts it was measured against. Editing a pack
-    # changes the scores the model produces, so a threshold calibrated against an older pack
-    # no longer describes anything — and this drifts silently: calibrate, apply, forget to
-    # redeploy the Space, and stale cutoffs get applied to different numbers with no error
-    # anywhere.
-    #
-    # We keep using the threshold (it is still the best guess available) but stop claiming it
-    # is calibrated, so `calibrated: false` reaches the caller and the admin UI shows the tag
-    # needs re-running. This was a real incident during development, not a hypothetical.
-    stale = bool(live_packs_version) and bool(t.packs_version_seen) and (
-        t.packs_version_seen != live_packs_version
-    )
-    calibrated = t.calibrated and not stale
+    present = raw["present"]
+    if present is not None and not isinstance(present, bool):
+        # Belt and braces behind the schema. A stringy "true" is not a decision, and treating
+        # it as one is how a wrong verdict gets served with full confidence.
+        raise ValueError(f"{raw.get('tag')!r}: present must be a bool or None, got {present!r}")
 
     score = float(raw["score"])
-    sigmoid = float(raw["sigmoid"])
 
-    band, present, decided_by = band_of(
-        score, sigmoid, t.threshold_low, t.threshold_high, t.sigmoid_floor
+    if present is None:
+        # An uncertain verdict has no margin to measure.
+        confidence: Confidence = "low"
+    elif score >= VLM_HIGH:
+        confidence = "high"
+    elif score >= VLM_MEDIUM:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    # A tag measured against a different catalog is stale, not calibrated. Same comparison the
+    # threshold path made, for the same reason: presenting a guess as a measurement is the
+    # failure this product exists to prevent.
+    stale = bool(live_packs_version) and bool(t.packs_version_seen) and (
+        t.packs_version_seen != live_packs_version
     )
 
     return Verdict(
         tag=raw["tag"],
         present=present,
         score=score,
-        confidence=confidence_of(score, t.threshold_low, t.threshold_high, band),
-        decided_by=decided_by,
-        calibrated=calibrated,
-        band=band,
+        confidence=confidence,
+        decided_by="vlm",
+        calibrated=t.calibrated and not stale,
+        band="present" if present else ("absent" if present is False else "uncertain"),
         evidence=Evidence(
             top_phrase=raw["top_phrase"],
-            crop=list(raw["crop"]),
-            sigmoid=sigmoid,
+            # No crop and no sigmoid to report. Null, not zero: a zero would read as a
+            # measured absence of resemblance rather than a question never asked.
+            crop=None,
+            sigmoid=None,
             frame=(
                 FrameRef(int(raw["frame_index"]), float(raw["timestamp_s"]))
                 if "frame_index" in raw
@@ -238,66 +244,6 @@ def decide(
 #: queue by "answered, but barely".
 VLM_HIGH = 0.85
 VLM_MEDIUM = 0.60
-
-
-def _decide_vlm(
-    raw: dict[str, Any],
-    t: Thresholds,
-    live_packs_version: str | None,
-) -> Verdict:
-    """
-    A verdict the model already reached. No banding, no floor, no thresholds.
-
-    `present` is carried through EXACTLY as the model gave it, including None. That is the
-    line AGENTS.md rule 1 draws and this path makes it native rather than derived: under
-    SigLIP "uncertain" was the gap between two cutoffs, here it is an answer the model chose
-    to give. Flattening it to False anywhere between here and the API would turn "we could not
-    tell" into "we checked and it is clean", which is the failure this product exists to
-    prevent.
-    """
-    present = raw["present"]
-    if present is not None and not isinstance(present, bool):
-        # Belt and braces behind the schema. A stringy "true" is not a decision; treating it
-        # as one is how a wrong verdict gets served with full confidence.
-        raise ValueError(f"{raw.get('tag')!r}: present must be a bool or None, got {present!r}")
-
-    score = float(raw["score"])
-
-    if present is None:
-        # An uncertain verdict has no margin to measure, exactly as in confidence_of().
-        confidence: Confidence = "low"
-    elif score >= VLM_HIGH:
-        confidence = "high"
-    elif score >= VLM_MEDIUM:
-        confidence = "medium"
-    else:
-        confidence = "low"
-
-    stale = bool(live_packs_version) and bool(t.packs_version_seen) and (
-        t.packs_version_seen != live_packs_version
-    )
-
-    return Verdict(
-        tag=raw["tag"],
-        present=present,
-        score=score,
-        confidence=confidence,
-        decided_by="vlm",
-        calibrated=t.calibrated and not stale,
-        band="present" if present else ("absent" if present is False else "uncertain"),
-        evidence=Evidence(
-            top_phrase=raw["top_phrase"],
-            # No crops and no sigmoid to report. Null, not zero: a zero would read as a
-            # measured absence of resemblance rather than a question never asked.
-            crop=None,
-            sigmoid=None,
-            frame=(
-                FrameRef(int(raw["frame_index"]), float(raw["timestamp_s"]))
-                if "frame_index" in raw
-                else None
-            ),
-        ),
-    )
 
 
 def decide_all(

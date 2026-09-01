@@ -7,35 +7,18 @@ bottom is not background colour, it is the set of invariants that make the produ
 This was a Next.js app until it was rewritten in Python. If you find TypeScript, Drizzle,
 Vercel or `npm` referenced anywhere, it is stale and should be fixed.
 
-## Two environments, on purpose
+## One environment, now
 
-| | `tagverify/` (web app) | `inference/` (model) |
-|---|---|---|
-| venv | `.venv` at the repo root | `inference/.venv` |
-| deps | `pyproject.toml` | `inference/requirements.txt` |
-| deployed to | Docker / any host | a Hugging Face Space, via `git subtree push` |
+There used to be two, on purpose: `.venv` served HTTP and `inference/.venv` ran a SigLIP 2
+model deployed to a Hugging Face Space, and the rule was never to let the ML stack cross into
+the web tier. That split, the Space, the prompt pack and the publish step that carried one to
+the other are all gone -- a model that reads its prompt per request needs none of them. One
+venv, one `pyproject.toml`, one deploy.
 
-**Never add torch, transformers or gradio to `pyproject.toml`**, and never import
-`inference.detector` from `tagverify/`. The split exists so that serving HTTP does not require
-2GB of ML wheels. The one shared file is `inference/banding.py`, which imports nothing.
-
-`av` in `pyproject.toml` is not an exception to that rule. It is a codec binding for reading
-video (~18MB, ffmpeg bundled in its wheels, no system package), not an ML dependency, and it
-does not cross the tiers: frame sampling happens in the web tier and the Space still only ever
-receives a single still.
-
-`inference/` runs FLAT inside the Space (`import detector`) and as a package in this repo
-(`from inference.banding import ...`). That is why `detector.py` and `calibrate.py` use a
-try/except import shim. Do not "simplify" it away.
-
-The client that CALLS the model tier is `tagverify/scoring/client.py`. It used to be
-`dooh/inference/client.py`, which meant two things called `inference` at different levels
-meaning opposite ends of the same wire, one nested inside the other. Keep the two words apart:
-**`inference/` is the tier, `scoring/` is our client for it.** The web package is `tagverify`,
-not `dooh` — `dooh` names the whole domain, and three sibling projects live under `Dooh/`. The
-`dooh` CLI command, the `dooh_live_` key prefix and the `dooh_admin` cookie keep their names:
-the first is human-facing, and changing either of the others would invalidate every issued key
-and every open session.
+`inference/` survives as **data only**: the labelled eval images, and the measurements taken
+over them. `inference/gate_cache.json` holds the SigLIP baseline the removal was judged
+against -- 146 cross-tag false blocks, 0.688 mean recall over 466 images -- so the comparison
+outlived the code. The model itself is preserved on `main`.
 
 ## Rules that are load-bearing
 
@@ -43,21 +26,24 @@ and every open session.
    default, or a convenience helper turn "we don't know" into "we checked and it's clean".
 2. **An unknown tag is an error.** Refuse the whole request; never skip the tag and return
    the others.
-3. **The sigmoid floor is checked BEFORE the score bands.** Reordering makes a photo of a
-   mountain read as alcohol. The rule lives in `inference/banding.py` and nowhere else — it
-   used to be written out three times and the copies drifted. Do not add a second sigmoid
-   check above the floor: it was tried, and `band_of`'s docstring records why it cannot work.
+3. **There is no banding left, and that is the point.** A similarity score meant nothing on
+   its own -- measured true positives ran 0.028 to 0.902 -- so a verdict used to be two cutoffs
+   and an absolute-resemblance floor, and every tag needed calibrating first. The model answers
+   the question now, so `decide()` carries `present` out unchanged. Do not reintroduce a
+   threshold on `score`: it is the model's own self-reported confidence, a different quantity
+   from a similarity, and nothing enforces on it.
 4. **`calibrated: false` must stay visible** in the API and in the UI. An uncalibrated
    verdict is a guess, and presenting a guess as a measurement is the failure mode this whole
    product exists to prevent.
 5. **Never store the media.** Only its sha256 — video included, which is why it is decoded
    from an in-memory buffer and never written to disk.
-6. **Every tag competes against every other tag's positives.** Softmax gives its mass to a
-   tag's positives when nothing else in the pool describes the image, so the catalog doubles as
-   the negative space (`detector.py` `_verdict`). Two fingerprints follow from this:
-   `packs_version` covers the prompts and the scoring code (`inference/versioning.py`),
-   `decision_version` covers the rule and the thresholds (`tagverify/tags/decide.py`). If a change
-   moves a NUMBER, it belongs in the first; if it changes how that number is READ, the second.
+6. **A tag is its description, and the description is the prompt.** It is sent to the model
+   verbatim and is the whole of what is asked, so description quality IS tag quality -- there
+   is no threshold left to tune afterwards. Two fingerprints still split the same way:
+   `packs_version` covers the question (model id + prompt + every tag's description,
+   `scoring/prompt.py`), `decision_version` covers how the answer is read
+   (`tags/decide.py`). If a change moves what is ASKED it belongs in the first; if it changes
+   how the answer is INTERPRETED, the second.
 7. **Never expose thresholds** through `/api/v1/tags`. `decision_version` is not an
    exception: it is a truncated one-way hash of them, published so a caller can key its
    own cache on the rule that produced a verdict instead of serving a superseded one.
@@ -65,9 +51,10 @@ and every open session.
 9. **Admin defaults closed.** With `ADMIN_PASSWORD` unset, `/admin` refuses rather than
    opening, and every mutating handler re-checks the session itself.
 10. **Video frames are decided individually, then collapsed.** Present beats uncertain beats
-   absent. Never rank frames by raw score: the sigmoid floor is a per-frame veto, so a vetoed
-   0.92 frame would beat a genuine 0.60 one. The rule lives in `tagverify/analyze/aggregate.py`
-   and nowhere else.
+   absent, and band comes before score. All six frames now travel in ONE request, which is a
+   transport detail and must not become a decision-making one: the schema carries a verdict
+   per frame per tag, and the prompt asks for per-frame independence explicitly. The collapse
+   lives in `tagverify/analyze/aggregate.py` and nowhere else.
 11. **A frame that fails fails the request.** No partial video verdicts, ever.
 12. **The media kind is sniffed from the bytes**, never from the field name, filename or
     Content-Type — otherwise renaming a file is a way around the policy.
@@ -76,12 +63,18 @@ and every open session.
 
 ```bash
 make check              # ruff + the full pytest suite
-make inference-smoke    # only if you touched inference/ — 17 golden ML cases
 ```
 
-`tests/test_banding.py` is the highest-value file in the repo. If you change how a verdict is
-decided, it should fail. If it doesn't, the test is wrong. `tests/test_aggregate.py` is its
-counterpart for video: if you change how frames combine, that one should fail.
+`make inference-smoke` is gone with the model tier. `tests/test_aggregate.py` is now the
+highest-value file in the repo: if you change how video frames combine, it should fail. Its
+former counterpart `tests/test_banding.py` was deleted with the rule it guarded -- there is no
+score to band any more.
+
+The suite pins `SCORER=fake` in `tests/conftest.py`, unconditionally. A real environment
+variable outranks `.env.local`, and that is the only way to stop a developer's own
+configuration deciding what the suite tests -- which happened, turning ten tests red on one
+machine and green on another. Tests needing a real model are marked `needs_inference` and skip
+under the fake.
 
 ## Frontend
 

@@ -63,7 +63,7 @@ from typing import Any
 from tagverify.analyze import intake
 from tagverify.analyze.run import _score, _scorer_health
 from tagverify.db.session import session_scope
-from tagverify.scoring.client import InferenceWarming
+from tagverify.scoring.base import InferenceWarming
 from tagverify.tags.decide import cached_thresholds, decide_all
 
 EVAL_DIR = Path("inference/eval")

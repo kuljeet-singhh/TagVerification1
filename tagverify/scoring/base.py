@@ -49,3 +49,36 @@ class ScorerHealth:
     #: a phrase pack encoded inside the Space rather than text we send. Carried here so the
     #: scoring call does not need a second database read on the hot path.
     specs: dict[str, str] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------- errors
+#
+# These moved here from scoring/client.py when the SigLIP tier was removed. They were
+# never Gradio concepts: they mean "retry, this is expected" and "the scorer failed",
+# which every scorer needs and every caller in the codebase already translates into the
+# right HTTP status, playground message and admin banner. Keeping the names is what let
+# that whole translation layer survive the swap untouched.
+
+
+class InferenceWarming(Exception):
+    """
+    The scorer is temporarily unable to answer, and will be able to shortly.
+
+    Callers surface a retryable 503 with Retry-After, not a generic failure. It named a
+    sleeping Space reloading 400MB of weights; it now names a provider returning 429 or 503
+    under load. Same shape of problem, same correct response: wait and ask again.
+    """
+
+    def __init__(self, message: str, retry_after: int = 30) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class InferenceError(Exception):
+    """
+    The scorer failed, or answered something we will not act on.
+
+    A refusal, a timeout, a malformed reply, a short frame list. Never a partial or optimistic
+    result: raising is what makes the creative FLAG downstream rather than pass, which is the
+    single failure mode this product exists to prevent.
+    """

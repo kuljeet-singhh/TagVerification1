@@ -42,8 +42,7 @@ from tagverify.analyze.intake import Intake
 from tagverify.config import settings
 from tagverify.scoring import prompt as prompt_module
 from tagverify.scoring import vlm
-from tagverify.scoring.base import ScorerHealth
-from tagverify.scoring.client import InferenceError, InferenceWarming
+from tagverify.scoring.base import InferenceError, InferenceWarming, ScorerHealth
 from tagverify.tags.catalog import list_tags
 
 log = logging.getLogger(__name__)

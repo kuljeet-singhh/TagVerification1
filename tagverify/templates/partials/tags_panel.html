@@ -91,20 +91,11 @@
           are not used &mdash; they stay available for a rollback to SigLIP.
         </p>
       {% endif %}
-      {% if phrases_required %}
-        <p class="small muted" style="margin-top:3px">
-          A tag is its phrases. The <strong>negatives</strong> do most of the work: name the
-          things that get <em>mistaken</em> for it, and mirror the positives&rsquo; wording
-          &mdash; if a positive says &ldquo;a scoop of X&rdquo;, a negative should say &ldquo;a
-          scoop of Y&rdquo;. One phrase per line.
-        </p>
-      {% else %}
-        <p class="small muted" style="margin-top:3px">
+              <p class="small muted" style="margin-top:3px">
           A tag is a name and a sentence. The <strong>description</strong> is what the model is
           actually asked, so name the thing, name its boundary, and say what does
           <em>not</em> count. It works the moment you save &mdash; there is no publish step.
         </p>
-      {% endif %}
     </div>
 
     {# Label first: the slug is DERIVED from it, so leading with the derived value would ask
@@ -139,7 +130,7 @@
     {# Collapsed, not removed, when a VLM is scoring. The columns stay populated so a rollback
        to SigLIP is a config change rather than a re-authoring exercise — and a tag saved
        without them is flagged "VLM only" in the table, because export-packs will refuse it. #}
-    {% if not phrases_required %}<details class="stack gap-3"><summary class="small muted">
+    {%- if true %}<details class="stack gap-3"><summary class="small muted">
       Phrases &mdash; only used by SigLIP, not by the model currently scoring
     </summary>{% endif %}
 
@@ -147,14 +138,14 @@
       <div class="field" style="flex:1;min-width:260px">
         <label for="tag-positives">Positives &mdash; what we are hunting</label>
         <textarea class="input" id="tag-positives" name="positives" rows="6"
-                  {% if phrases_required %}required{% endif %}
+                  
                   placeholder="a bag of dog food&#10;a cat sitting in a pet carrier"
                   >{{ form.positives if form else '' }}</textarea>
       </div>
       <div class="field" style="flex:1;min-width:260px">
         <label for="tag-negatives">Negatives &mdash; what gets mistaken for it</label>
         <textarea class="input" id="tag-negatives" name="negatives" rows="6"
-                  {% if phrases_required %}required{% endif %}
+                  
                   placeholder="a bag of rice&#10;a wild animal in a forest"
                   >{{ form.negatives if form else '' }}</textarea>
       </div>
@@ -167,7 +158,7 @@
                 >{{ form.rationale if form else '' }}</textarea>
     </div>
 
-    {% if not phrases_required %}</details>{% endif %}
+    {%- if true %}</details>{% endif %}
 
     <div class="row gap-3" style="align-items:flex-end">
       <button class="btn btn-primary" type="submit">

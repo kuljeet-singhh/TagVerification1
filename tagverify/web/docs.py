@@ -7,7 +7,8 @@ from fastapi.responses import HTMLResponse
 
 from tagverify.analyze import video
 from tagverify.analyze.intake import MAX_IMAGE_BYTES
-from tagverify.scoring.client import cached_inference_health
+from tagverify.db.session import session_scope
+from tagverify.scoring import registry
 from tagverify.templating import render
 
 router = APIRouter()
@@ -60,13 +61,14 @@ async def docs(request: Request) -> HTMLResponse:
         "max_frames": video.MAX_FRAMES,
     }
     try:
-        health = await cached_inference_health()
+        async with session_scope() as session:
+            health = await registry.module().health(session)
         context |= {
             "packs_version": health.packs_version,
             "model": health.model,
             "health_class": "is-ok",
         }
-    except Exception:  # noqa: BLE001 - the docs must render whether or not the Space is up
+    except Exception:  # noqa: BLE001 - the docs page must render even with no scorer at all
         context["health_class"] = "is-down"
 
     return render(request, "pages/docs.html", context)

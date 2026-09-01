@@ -18,27 +18,17 @@ dependencies = [
     "alembic>=1.13",
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
-    "gradio-client>=1.5",
     "httpx>=0.28",
     "pillow>=10.0",
-    # Video decoding, for sampling frames out of a video creative. This is NOT a breach of
-    # the "never add torch/transformers/gradio here" rule: av is a codec binding, not ML, and
-    # the web-tier / model-tier split is untouched — the Space still only ever sees a still.
-    # Its wheels bundle ffmpeg statically, so there is no system package and no Dockerfile
-    # change. ~18MB, against ~2GB for the ML stack it is often confused with.
+    # Video decoding, for sampling frames out of a video creative. A codec binding, not ML;
+    # its wheels bundle ffmpeg statically, so there is no system package and no Dockerfile
+    # change. ~18MB.
     "av>=13",
-    # The VLM scorer (tagverify/scoring/vlm.py, SCORER=vlm). An HTTP client with pydantic
-    # models, ~1MB — it is NOT a breach of the "never add torch/transformers/gradio here"
-    # rule, which exists so that serving HTTP does not require the ML stack. Nothing is
-    # loaded, nothing is downloaded, and the two-tier split is untouched while SCORER=siglip
-    # remains the default. httpx is already a dependency, so the incremental cost is close to
-    # zero.
+    # The two scorer providers. Both are dependencies rather than extras on purpose: `dooh
+    # gate` scores the same images with each and picks on the numbers, which cannot happen if
+    # installing the loser is a separate step. HTTP clients with pydantic models, ~1MB each,
+    # and httpx was already here.
     "anthropic>=0.40",
-    # The other half of the same scorer (tagverify/scoring/gemini.py, VLM_PROVIDER=gemini).
-    # Both providers are dependencies rather than extras on purpose: the stage-2 gate scores
-    # the same images with both and picks on the numbers, which cannot happen if installing
-    # the loser is a separate step. Same reasoning as `anthropic` above — HTTP clients, not
-    # the ML stack, so the two-tier rule is untouched.
     "google-genai>=2.0",
     "typer>=0.15",
 ]
@@ -59,16 +49,15 @@ requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-# `inference` is a package here so the web app can import the shared banding rule
-# from inference/banding.py. That directory is ALSO git-subtree-pushed to the
-# Hugging Face Space, where it runs flat (no package); see inference/banding.py.
+# `inference` is still a package so its measurements ship with the wheel, but it holds no code
+# any more — the model, its client and the pack it published were removed on 2026-09-01.
 #
-# Discovered, not hand-listed. Because `tagverify` sits at the repo root it is importable from the
-# working tree whether or not it is declared correctly, so a hand-maintained list can omit a
-# subpackage and ship a broken wheel with a fully green test suite.
+# Discovered, not hand-listed. Because `tagverify` sits at the repo root it is importable from
+# the working tree whether or not it is declared correctly, so a hand-maintained list can omit
+# a subpackage and ship a broken wheel with a fully green test suite.
 #
 # namespaces = false is load-bearing, not cosmetic: the default is true, and inference/eval/
-# and inference/.testimages/ would otherwise be picked up as PEP-420 namespace packages.
+# would otherwise be picked up as a PEP-420 namespace package.
 include = ["tagverify*", "inference*"]
 namespaces = false
 
@@ -83,22 +72,16 @@ filterwarnings = ["ignore::DeprecationWarning"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# ruff honours .gitignore already, which covers all three. Naming them explicitly keeps the
-# model tier's virtualenv and its regenerable image sets out of scope even when ruff is run
-# with --no-respect-gitignore.
-extend-exclude = ["inference/.venv", "inference/eval", "inference/.testimages"]
+# The labelled eval images are data, not code. Named explicitly so they stay out of scope even
+# when ruff is run with --no-respect-gitignore.
+extend-exclude = ["inference/eval"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["B008"]  # FastAPI's Depends()/File() defaults are the documented idiom
 
 [tool.ruff.lint.isort]
-# Inside the Hugging Face Space, inference/ runs FLAT: app.py does `from detector import
-# Detector`, not `from .detector import`. Without this, ruff reads those as third-party and
-# merges them into the PIL/torch block, erasing the visual separation between "someone else's
-# code" and "this directory's own modules, imported the way the Space sees them". The shim
-# that makes both forms work is documented in inference/detector.py:56-65.
-known-first-party = ["banding", "detector", "versioning", "tagverify", "inference"]
+known-first-party = ["tagverify", "inference"]
 
 [tool.mypy]
 python_version = "3.12"

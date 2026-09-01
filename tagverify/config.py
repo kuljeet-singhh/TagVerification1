@@ -4,7 +4,7 @@ Configuration, read once at import from the environment (and `.env` in developme
 The old code reached for `process.env.X` at seven different call sites, which meant
 "is this variable required?" could only be answered by grepping. Collecting them here
 makes the answer a type: `str` is required, `str | None` is optional, and the one
-genuinely-optional-but-important case (INFERENCE_URL) gets a comment saying why.
+genuinely-optional-but-important case gets a comment saying why.
 
 Nothing here raises on a missing value. A missing DATABASE_URL must degrade to a
 `/health` response that reports the problem, not to a process that refuses to boot —
@@ -26,22 +26,18 @@ class Settings(BaseSettings):
 
     database_url: str | None = None
 
-    # Which scorer decides a verdict. "siglip" is the default and stays the default until the
-    # VLM has been measured against the eval set -- see docs/VLM_SCORING.md 9, stage 2. A flag
-    # rather than a deploy is deliberate: the two can be compared on the same box, and a
-    # rollback is an env var rather than a release.
+    # Which scorer decides a verdict.
     #
-    #   siglip  the SigLIP 2 Space (tagverify/scoring/client.py)
     #   vlm     a vision language model, read per request (tagverify/scoring/vlm.py)
     #   fake    canned verdicts from a fixture (tagverify/scoring/fake.py) -- offline
     #           development and tests only, never a deployment
-    scorer: str = "siglip"
+    #
+    # "siglip" was the third value and is gone: the ranking model, its Space, its prompt pack
+    # and the publish step that carried one to the other were removed once a reading model
+    # made all four unnecessary. It is preserved on `main`, and the comparison that justified
+    # the removal is in inference/gate_cache.json.
+    scorer: str = "vlm"
 
-    # Inference target. HF_SPACE wins when both are set; INFERENCE_URL is the local-dev
-    # escape hatch that lets you run `python inference/app.py` without deploying.
-    hf_space: str | None = None
-    inference_url: str | None = None
-    hf_token: str | None = None
 
     # The VLM scorer. Provider and model are config, not code, because docs/VLM_SCORING.md 6.1
     # makes them a swappable detail: the argument is for a model that READS its prompt per
@@ -65,11 +61,6 @@ class Settings(BaseSettings):
     # Absent means /admin refuses access rather than opening it. See tagverify/auth/admin.py.
     admin_password: str | None = None
 
-    # Shared secret for pushing a pack into the running model (`dooh push-packs`). Must match
-    # RELOAD_SECRET in the model tier's environment. Absent means publishing is refused, on
-    # both sides — HF_TOKEN is read-scoped and already deployed in two places, so it cannot be
-    # what guards a mutating endpoint.
-    reload_secret: str | None = None
 
     log_level: str = "INFO"
 
@@ -78,11 +69,6 @@ class Settings(BaseSettings):
     # is not free inference.
     playground_rate_limit_per_min: int = 20
     admin_login_attempts_per_min: int = 5
-
-    @property
-    def inference_target(self) -> str | None:
-        """Where to reach the inference service, or None if neither is configured."""
-        return (self.hf_space or "").strip() or (self.inference_url or "").strip() or None
 
     @property
     def scorer_target(self) -> str | None:
@@ -97,8 +83,6 @@ class Settings(BaseSettings):
         noticed a month later.
         """
         match (self.scorer or "").strip().lower():
-            case "siglip":
-                return self.inference_target
             case "vlm":
                 key = (
                     self.gemini_api_key

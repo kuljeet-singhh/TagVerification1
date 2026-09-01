@@ -26,27 +26,11 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# One of the two shared files, not the model tier: versioning.py imports only the stdlib and
-# the Dockerfile copies it into the web image for exactly this. See publish_state -- both
-# tiers must fingerprint a tag identically, so the definition cannot be duplicated here.
-from inference.versioning import surface_fingerprint
 from tagverify.db.models import ContentTag
 
 SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
-#: Hard floors -- FOR SIGLIP. The shipped catalog averages 6 positives / 7 negatives; its
-#: best-measured tag (`alcohol`, recall 0.93) carries 8 and 12, four of which exist purely
-#: because a photo of a hamburger scored 0.939 for alcohol until bar-food scenes were named.
-#:
-#: They are floors because SigLIP RANKS: it cannot answer "is there alcohol here?", only "which
-#: of these phrases fits best", so the phrase pool IS the question and a thin one is a question
-#: too vague to answer. See docs/VLM_SCORING.md 2.
-MIN_POSITIVES = 5
-MIN_NEGATIVES = 6
-
-#: Advisory floors -- below these a tag usually works, but not well.
-GOOD_POSITIVES = 8
-GOOD_NEGATIVES = 10
+#: Below this a description is too thin to be a prompt. Advisory, never a refusal.
 
 #: Below this a description is too thin to be a prompt. Advisory, never a refusal: a short
 #: description is a weak tag, not an invalid one, and a rule that refuses teaches people to
@@ -54,29 +38,6 @@ GOOD_NEGATIVES = 10
 GOOD_DESCRIPTION = 40
 
 
-def phrase_floors() -> tuple[int, int]:
-    """
-    How many positives and negatives this tag actually needs, given who is scoring.
-
-    THE PHRASES ARE NOT CEREMONY, THEY ARE SIGLIP'S QUESTION. It ranks an image against a pool
-    and reports which phrase won, so without a pool there is nothing to rank and no answer.
-    That is why the floors exist and why they are hard.
-
-    A VLM reads the tag's description and answers directly, so it never sees the phrases at all
-    (`scoring/vlm.py`, `scoring/gemini.py` build their prompt from `description` alone). Asking
-    an admin for eighteen strings that are then not sent anywhere is the authoring cost of the
-    old model with none of its benefit -- so under a VLM the floor is zero and a tag is a name
-    and a sentence, which is the entire point of the change.
-
-    Read per call rather than captured at import: `SCORER` is a flag precisely so the two can be
-    compared on one box, and a floor frozen at startup would enforce whichever scorer happened
-    to be configured when the process booted.
-    """
-    from tagverify.scoring import registry
-
-    if registry.name() == "siglip":
-        return MIN_POSITIVES, MIN_NEGATIVES
-    return 0, 0
 
 #: Mirrors MAX_TAGS_PER_CALL in inference/app.py, which is the authority. Duplicated rather
 #: than imported because tagverify must never import from the model tier (see AGENTS.md);
@@ -145,47 +106,6 @@ def _clean_list(raw: list[str], what: str, minimum: int) -> list[str]:
             f"weigh the image against."
         )
     return out
-
-
-def _phrase_head(phrase: str) -> str | None:
-    """
-    The QUANTIFIER of a phrase -- "a bottle of" from "a bottle of whiskey" -- or None when it
-    has none.
-
-    Returning None for "a car" rather than falling back to the first two words is the whole
-    difference between a useful check and noise. A first-two-words head is really the subject,
-    and a tag's negatives are about DIFFERENT subjects by definition, so it never matches:
-    measured against the shipped catalog, that version warned on 20 tags out of 20. Restricted
-    to quantifiers it warns on 13, and -- the part that matters -- `alcohol` and
-    `protein_supplements` come back clean. Those are exactly the two tags whose negatives were
-    hand-hardened by the measurements this rule comes from, so the check now agrees with the
-    evidence instead of shouting at it.
-    """
-    lowered = phrase.casefold()
-    if " of " in lowered:
-        return lowered.split(" of ", 1)[0] + " of"
-    return None
-
-
-def _mirror_warnings(positives: list[str], negatives: list[str]) -> list[str]:
-    """
-    RULE 1, as an advisory check.
-
-    A heuristic, so it advises and never refuses -- but it is the single most useful thing
-    this form can tell an author, because an unmirrored phrasing is exactly the failure the
-    baby-formula measurement records.
-    """
-    negative_heads = {h for n in negatives if (h := _phrase_head(n))}
-    positive_heads = {h for p in positives if (h := _phrase_head(p))}
-    unmirrored = sorted(positive_heads - negative_heads)
-    if not unmirrored:
-        return []
-    shown = ", ".join(f"“{h} …”" for h in unmirrored[:3])
-    more = f" (and {len(unmirrored) - 3} more)" if len(unmirrored) > 3 else ""
-    return [
-        f"No negative mirrors the phrasing {shown}{more}. A negative that echoes a positive's "
-        f"wording is what stops the model deciding on composition instead of content."
-    ]
 
 
 async def _existing_positives(
@@ -262,9 +182,12 @@ async def validate_tag(
     if not description:
         raise TagValidationError("Description is required — it is what a screen owner sees.")
 
-    min_positives, min_negatives = phrase_floors()
-    positives = _clean_list(positives, "positives", min_positives)
-    negatives = _clean_list(negatives, "negatives", min_negatives)
+    # No minimum. The phrases were SigLIP's question -- it ranked an image against them and
+    # could not answer without a pool -- and SigLIP is gone. They are kept as nullable columns
+    # so a rollback to `main` is a checkout rather than a re-authoring exercise, and validated
+    # if supplied so a half-filled tag cannot poison that rollback.
+    positives = _clean_list(positives, "positives", 0)
+    negatives = _clean_list(negatives, "negatives", 0)
 
     overlap = {p.casefold() for p in positives} & {n.casefold() for n in negatives}
     if overlap:
@@ -290,31 +213,8 @@ async def validate_tag(
     if sigmoid_floor is not None and not 0 <= sigmoid_floor <= 1:
         raise TagValidationError("Sigmoid floor must be between 0 and 1.")
 
-    warnings = _mirror_warnings(positives, negatives)
+    warnings: list[str] = []
 
-    if not positives or not negatives:
-        # Only reachable under a VLM (the floors above refuse it otherwise), and it is not an
-        # error there — but it is a one-way door worth naming. A phrase-less tag is invisible
-        # to SigLIP, so switching SCORER back would drop it from the pack, dooh-backend would
-        # see fewer verdicts than blocked tags, and policy.ts falls through to NOT_VERIFIED —
-        # a FLAG, not a block. Screens would quietly stop enforcing a category their owner
-        # chose. `dooh export-packs` refuses rather than lets that ship (see tags/publish.py),
-        # and this is the earlier, cheaper warning.
-        warnings.append(
-            "No phrases. This tag works with the VLM, which reads the description — but it "
-            "cannot be scored by SigLIP, so it would not survive switching SCORER back."
-        )
-    else:
-        if len(positives) < GOOD_POSITIVES:
-            warnings.append(
-                f"Only {len(positives)} positives. {GOOD_POSITIVES}+ is where tags start "
-                f"behaving."
-            )
-        if len(negatives) < GOOD_NEGATIVES:
-            warnings.append(
-                f"Only {len(negatives)} negatives. The negatives do most of the work — name "
-                f"the things that get mistaken for this tag, not unrelated ones."
-            )
 
     if len(description) < GOOD_DESCRIPTION:
         # Load-bearing under a VLM in a way it never was under SigLIP, where it was only the
@@ -449,32 +349,3 @@ async def retire_tag(session: AsyncSession, slug: str, *, actor: str = "admin") 
 
 
 # ------------------------------------------------------------------ publish state
-
-
-def publish_state(
-    row: ContentTag, live_slugs: set[str] | None, live_fingerprints: dict[str, str] | None
-) -> str | None:
-    """
-    Is what the RUNNING model holds for this tag what the catalog now says?
-
-    Returns "live", "absent" (the model has never heard of it), "edited" (it has the slug but
-    different phrases or a different floor), or None for "we cannot tell".
-
-    None is a real answer and callers must render it as silence. Two ways to get it: the model
-    did not respond at all (`live_slugs is None`), or it responded but is running a build old
-    enough not to report fingerprints (`live_fingerprints is None`) -- in which case an absent
-    slug is still knowable and only the edited/live distinction is not. Flagging every tag
-    because we could not ask is the always-on warning this whole signal exists to replace.
-
-    The fingerprint comes from inference.versioning, the same function the model calls over its
-    own loaded pack. Comparing `row.positives` directly is safe because packs.row_to_pack copies
-    both phrase lists verbatim -- the row and the exported pack entry are the same input.
-    """
-    if live_slugs is None:
-        return None
-    if row.slug not in live_slugs:
-        return "absent"
-    if live_fingerprints is None:
-        return None
-    ours = surface_fingerprint(list(row.positives), list(row.negatives), row.sigmoid_floor)
-    return "live" if live_fingerprints.get(row.slug) == ours else "edited"

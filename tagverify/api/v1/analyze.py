@@ -28,7 +28,7 @@ from tagverify.auth.authenticate import charge_extra
 from tagverify.auth.deps import Guarded, guard
 from tagverify.db.session import get_session
 from tagverify.errors import ApiError
-from tagverify.scoring.client import InferenceError, InferenceWarming
+from tagverify.scoring.base import InferenceError, InferenceWarming
 
 log = logging.getLogger(__name__)
 router = APIRouter()

@@ -1,4 +1,4 @@
-.PHONY: install dev serve-lan test test-fast lint fmt typecheck check inference-smoke clean migrate migrate-sql
+.PHONY: install dev serve-lan test test-fast lint fmt typecheck check clean migrate migrate-sql
 
 VENV := .venv
 PY   := $(VENV)/bin/python
@@ -90,8 +90,6 @@ check: lint test
 
 # Proves that extracting banding.py changed no ML behaviour. Needs inference/.venv, which is
 # separate from the web app's on purpose.
-inference-smoke:
-	cd inference && ./.venv/bin/python smoke_test.py
 
 clean:
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +

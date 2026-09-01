@@ -21,12 +21,12 @@ from tagverify.config import settings
 #: Every value `SCORER` may take. An unknown one is refused rather than defaulted, so a typo
 #: in an environment file is a loud failure at the first request instead of a silent fall back
 #: to a scorer nobody asked for.
-KNOWN = ("siglip", "vlm", "fake")
+KNOWN = ("vlm", "fake")
 
 
 def name() -> str:
     """The active scorer, normalised."""
-    return (settings().scorer or "siglip").strip().lower()
+    return (settings().scorer or "vlm").strip().lower()
 
 
 def provider() -> str:

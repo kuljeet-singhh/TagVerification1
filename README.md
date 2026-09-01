@@ -56,35 +56,24 @@ Two paths run through this repo. The first answers a question about a creative:
 Both entry points — the browser playground and an API key holder — run the *same* pipeline.
 There is no demo path that behaves differently from the real one.
 
-The second path decides *what the questions can be* — the catalog the model scores against:
+The second path decides *what the questions can be* — the catalog the model is asked about:
 
 ```
    admin UI    ─┐
-                ├──►   content_tags    ──dooh export-packs──►  inference/packs.json
-   DOOH admin  ─┘      pack_header                                      │
-   (tags:write)        (Postgres)                          push_packs (RELOAD_SECRET)
-                                                                        ▼
-                                                              SigLIP 2 (HF Space)
-                                                              reload_packs — no restart
+                ├──►   content_tags   ──►  read per request, as the prompt
+   DOOH admin  ─┘      (Postgres)
+   (tags:write)
 ```
 
-**A saved tag is a database row. It is not live until the catalog is published.** The detector
-encodes every prompt into embeddings once, at import, and has no access to Postgres — so a
-`POST /api/v1/tags` writes a row the model has never heard of. That is why every write handler
-returns `pending_publish: true`.
+**A saved tag is live.** There is no publish step, no pack file and no fingerprint to push,
+because the model reads its prompt on every request — so the database is the only source of
+truth and nothing can be stale relative to it. A tag written a second ago is in the next call.
 
-There is no draft/active state machine; `content_tags.status` is only `active` or `retired`.
-Publishing is **whole-catalog by nature** — one pack, one `packs_version` fingerprint — with
-two consequences worth knowing before you press it:
-
-- If someone else has a half-finished edit pending, **your publish takes it live.** New tags
-  default to `flag` mode in `dooh-backend` for exactly this reason: a tag that goes live early
-  records what it would have blocked, it does not refuse anyone.
-- Publishing moves `packs_version`, so **every** tag reverts to `calibrated: false` until the
-  catalog is recalibrated — not just the one you edited.
-
-See [`docs/TAG_PIPELINE_IN_PRODUCTION.md`](docs/TAG_PIPELINE_IN_PRODUCTION.md) for what breaks
-once this is deployed, and who owns which half.
+That was not always true. Until 2026-09-01 a SigLIP 2 detector ranked each image against a pool
+of hand-written phrases encoded into embeddings at startup, on a machine with no database
+access, so every tag needed 5+ positives, 6+ hard negatives, a calibrated threshold and a
+`dooh export-packs --push` before it scored anything. All of it existed to carry that pool
+across a tier boundary. See `docs/VLM_SCORING.md`.
 
 ## Repository layout
 
@@ -92,12 +81,10 @@ once this is deployed, and who owns which half.
 |---|---|
 | `tagverify/` | The web application: FastAPI, Jinja2 templates, HTMX. One process serves the API, the playground, the docs and the admin. |
 | `tagverify/tags/` | The catalog: `catalog.py` validates and does CRUD over `content_tags`, `packs.py` is pure read/write of the pack file, `publish.py` renders the catalog and pushes it to the model, `decide.py` holds the thresholds side of `decision_version`. |
-| `tagverify/scoring/client.py` | Our client **for** the model tier. Keep the two words apart: `inference/` is the tier, `scoring/` is the client. |
+| `tagverify/scoring/` | The scorer. `prompt.py` is the question and the JSON schema; `vlm.py` and `gemini.py` are the two providers, sharing everything but the SDK call; `fake.py` answers from fixtures for offline work; `registry.py` resolves `SCORER` to one of them. |
 | `tagverify/analyze/video.py` | Decoding a video and choosing which frames are worth scoring. Keyframes, then a colour-aware dedupe. |
 | `tagverify/analyze/aggregate.py` | The rule that collapses per-frame verdicts into one per tag. Pure, like `banding.py`, and tested the same way. |
-| `inference/` | The SigLIP 2 detector, deployed separately to a Hugging Face Space. Has its own `requirements.txt` and virtualenv on purpose — the web app must never depend on torch. |
-| `inference/banding.py` | The rule that turns a score into a verdict. Imported by the detector, by the calibration sweep, and by the API. **The single source of truth — do not copy it.** |
-| `inference/packs.json` | The live prompt pack. **Generated** from the database by `dooh export-packs` — do not hand-edit its `tags` array. |
+| `inference/` | **Data only.** The labelled eval images and the measurements taken over them, including `gate_cache.json` — the SigLIP baseline the removal was judged against. The detector itself is preserved on `main`. |
 | `migrations/` | Alembic. Brings an **existing** database forward; a new one is provisioned from `docs/schema.sql`. |
 | `tests/` | pytest. Runs against the ASGI app in-process; tests needing the database or the model skip cleanly when those are not configured. |
 
@@ -169,35 +156,6 @@ how a database that already holds data gets there. **A new column belongs in bot
 provisioning and migrating diverge. Alembic reads `DATABASE_URL` through the app's own settings
 (`migrations/env.py`), so the credential never lands in a tracked file.
 
-### 4. Seed it
-
-```bash
-dooh seed-thresholds  # tag_thresholds, from inference/packs.json
-dooh seed-tags        # content_tags + pack_header, from inference/packs.json
-```
-
-Both are non-destructive and safe to re-run: `seed-thresholds` never overwrites a row marked
-`calibrated`, and `seed-tags` never overwrites an existing tag. Run them **from a checkout, not
-from the container** — the image deliberately ships only three files out of `inference/`, and
-`packs.json` is not one of them.
-
-### 5. Start the model tier
-
-To run the model locally instead of against a deployed Space:
-
-```bash
-cd inference
-python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
-./.venv/bin/python app.py                    # serves on :7860
-```
-
-Then set `INFERENCE_URL=http://127.0.0.1:7860` and leave `HF_SPACE` unset. The first run
-downloads ~400MB of SigLIP 2 weights; after that startup is a few seconds. It is ready when the
-log says `[detector] ready: 23 tags`.
-
-To use the deployed Space instead, set `HF_SPACE` and `HF_TOKEN` and skip this step entirely —
-`HF_SPACE` takes precedence over `INFERENCE_URL`.
-
 ### 6. Run
 
 ```bash
@@ -224,11 +182,7 @@ Monitoring you cannot reach is not monitoring.
 | Variable | Required | What it does |
 |---|---|---|
 | `DATABASE_URL` | yes | Postgres. Use the **pooled** connection string, and keep it in the same region as the app — see the region warning in `docs/DEPLOY.md`. |
-| `HF_SPACE` | one of these two | The inference Space, as `owner/space-name`. Takes precedence over `INFERENCE_URL`. |
-| `INFERENCE_URL` | | Local-dev escape hatch — a direct URL to a locally running `inference/app.py`. Leave unset in production. |
-| `HF_TOKEN` | for a private Space | Needs **read** access only. Write access is for pushing the Space, not for running it. |
 | `ADMIN_PASSWORD` | yes, in practice | Gates `/admin`. **Unset means refused, never open.** |
-| `RELOAD_SECRET` | to publish | Shared secret for pushing a new pack into the running model. Must be the **same value** as `RELOAD_SECRET` in the Space's own environment; publishing is refused if either side is unset. It is not the `HF_TOKEN` and should not be set to it. |
 | `LOG_LEVEL` | no | Defaults to `INFO`. |
 | `PLAYGROUND_RATE_LIMIT_PER_MIN` | no | Defaults to 20. The playground carries no API key by design, so it is limited per IP. |
 | `ADMIN_LOGIN_ATTEMPTS_PER_MIN` | no | Defaults to 5. |
@@ -238,73 +192,44 @@ Monitoring you cannot reach is not monitoring.
 The `dooh` CLI, in roughly the order a catalog change moves through it:
 
 ```bash
-dooh seed-tags                    # import packs.json into content_tags + pack_header (once)
-dooh seed-thresholds              # populate tag_thresholds from inference/packs.json
-dooh export-packs                 # render packs.json FROM the database
-dooh push-packs                   # push an existing packs.json into the running model
-dooh apply-calibration            # apply measured thresholds from calibrate.py
 dooh create-key "Client name"     # issue an API key (printed once, only a hash is stored)
-dooh prune-usage                  # drop expired rate-limit rows
+dooh gate                         # SigLIP vs VLM over the labelled eval set
 dooh health                       # the /api/v1/health report, without a server
+dooh prune-usage                  # drop expired rate-limit rows
 ```
 
-**`export-packs`** takes `--out` (default `inference/packs.json`), `--check` (report what would
-change and exit 1 rather than writing), and `--push` (write, then publish live in one step). It
-distinguishes a **reformat** from a **content change** and tells you which you have — the
-distinction matters because the first export after moving the catalog into the database is
-semantically inert but still moves `packs_version`, since that is a hash of the file's bytes.
-A reformat needs the calibration re-stamped; a content change needs the catalog recalibrated.
 
-**`push-packs`** sends the pack file's own bytes to the Space's `reload_packs` endpoint, so a
-new catalog goes live **without a restart**. It needs `RELOAD_SECRET` on both sides. If the new
-pack fails to encode, the model keeps serving the previous one and says so.
 
 **`create-key`** takes `--rate-limit N` (default 60) and `--tags-write`, which adds the
 `tags:write` scope. Issue that as a **separate key** — do not add the scope to a key already in
 use for analyze. A key that scores creatives and a key that can change what scoring means are
 different blast radii.
 
-`seed-thresholds` and `seed-tags` are safe to re-run: neither overwrites existing rows, so
-re-seeding cannot clobber measured thresholds with the guesses in `packs.json`.
 
 ## Adding or changing a tag
 
-Through the admin UI at **`/admin?tab=tags`** or the JSON API — never by editing `packs.json`.
-The file is generated, so a hand edit to its `tags` array is silently reverted by the next
-export. (Everything *outside* that array — `$comment`, `prompt_template`, `shared_distractors`,
-`defaults` — lives in the `pack_header` row and is preserved verbatim.)
+Through the admin UI at **`/admin?tab=tags`** or the JSON API. A tag is three fields:
 
-The rules `tagverify/tags/catalog.py` enforces, and why:
+| | |
+|---|---|
+| `slug` | `^[a-z][a-z0-9_]*$`, and it **cannot be renamed**. A slug in use *or retired* is refused, because DOOH stores slug strings and reusing one silently re-points existing screen rules. |
+| `label` | What a screen owner sees. |
+| `description` | **This is the prompt.** It is sent to the model verbatim and is the whole of what is asked. |
 
-- **At least 5 positives and 6 negatives** (8 and 10 are advised). Below that the softmax pool
-  is too thin to be honest.
-- **Slugs match `^[a-z][a-z0-9_]*$` and cannot be renamed.** A slug already in use *or retired*
-  is refused — DOOH stores slug strings, so reusing one silently re-points existing screen rules.
-- **A positive phrase may not be shared with another active tag's positives.** `detector.py`
-  subtracts a tag's own phrases from its rival pool, so a shared phrase gets dropped from
-  **both** pools and helps neither tag.
-- **Mirror the phrasings.** If a positive says *"a scoop of protein powder"*, a negative must say
-  *"a scoop of <something else>"* — a real measurement went from 0.709 (wrongly present) to 0.224
-  on that one change. Name the confusable neighbour, not something random: `a plain brick wall`
-  teaches the model nothing about alcohol; `a bottle of fruit juice` is what actually gets
-  mistaken for it. Unmirrored phrasing is flagged as a warning, not an error.
-- **Retire, never delete.** `retire_tag` sets `status='retired'`; there is no hard delete. A
-  deleted slug is stranded in DOOH's `devices.blocked_tags`, where every upload then falls
-  through to `NOT_VERIFIED` forever.
-- **The cap is 100 active tags**, mirroring `MAX_TAGS_PER_CALL` in `inference/app.py` — DOOH
-  sends the whole catalog on every analyze call, so exceeding it fails every upload, not just
-  the new tag.
+**Save is live.** No publish, no calibration, no eval images.
 
-Then publish:
+**Write the description as a specification, not a blurb.** It is the only knob — there is no
+threshold to tune afterwards — so name the thing, name its boundary, and say what does *not*
+count. The exclusion clause is the part that earns its keep: it is what stops an alcohol-free
+beer, or a wine-themed logo, being blocked as alcohol. It is the direct successor to the hard
+negative phrases, and those were where the measured accuracy came from.
 
-```bash
-dooh export-packs --push
-```
+**Retire, never delete.** `retire_tag` sets `status='retired'`; there is no hard delete. A
+deleted slug is stranded in DOOH's `devices.blocked_tags`, where every upload then falls
+through to `NOT_VERIFIED` forever.
 
-**There is no publish button in the admin UI.** The tags panel shows a banner naming this
-command and lists which slugs are unpublished or edited. Publishing is whole-catalog — re-read
-[How it fits together](#how-it-fits-together) if that is news — and it moves `packs_version`,
-so the catalog needs recalibrating afterwards, not just the tag you touched.
+`positives` and `negatives` are still accepted and still stored, unused. They are the rollback
+path to `main`, where the ranking model still needs them.
 
 ## Testing
 
@@ -326,7 +251,9 @@ check` on your machine is the gate.
 The suite is 18 files: `tests/api/` for the JSON API, `tests/support/` for shared helpers (an
 in-memory MP4 encoder, so video tests need neither fixtures on disk nor a network), and the rest
 at the top level. Two markers in `tests/conftest.py` gate the rest: `needs_db` skips when
-`DATABASE_URL` is unset and `needs_inference` when neither `HF_SPACE` nor `INFERENCE_URL` is.
+`DATABASE_URL` is unset and `needs_inference` when no REAL scorer is configured — the
+suite pins `SCORER=fake`, which is configured by definition, so a test asserting a genuine
+detection has to skip rather than assert a tautology.
 Both read through `Settings`, not `os.environ`, so your `.env` counts.
 
 `tests/test_banding.py` is the highest-value file in the repo. If you change how a verdict is
@@ -474,36 +401,6 @@ Reaching the router but nothing else is the signature.
 
 ## Things worth knowing before you change anything
 
-**The sigmoid floor is a veto, and it is checked first.** Softmax must sum to 1, so an image
-containing nothing relevant can still hand a large share of the mass to a positive prompt purely
-by beating equally-irrelevant options. Without the veto, a photo of a mountain reads as alcohol.
-Keep the floor low — measured true positives run as low as 0.028.
-
-**The catalog is also the negative space.** Each tag is scored by softmax over its positives,
-its hard negatives, the shared distractors — and every *other* tag's positives. Without that
-last part a pool that cannot describe the image hands its mass to the tag's positives by
-default: a gym poster scored 0.97 for `gambling` because gambling's negatives are all board
-games and machines and nothing in the pool described a designed poster, while `gym_fitness` sat
-unused in the same catalog. It costs nothing (the logits already cover every prompt) and it
-means a tag's coverage of the real ad space now decides how well every *other* tag behaves.
-
-A second sigmoid check above the floor was tried for this and removed — see `band_of`. The
-sigmoid's scale is per-tag, so no global band separates a false positive at 0.0104 from a true
-one at 0.0108.
-
-**This is also why the catalog is shared, not per-tenant.** A per-tenant catalog would make
-*every* tenant's verdicts worse, because each one's negative space would shrink to their own
-tags. `dooh-backend` stores slug strings and proxies; it never mirrors the catalog.
-
-**`packs.json` is generated.** The catalog lives in `content_tags` and `pack_header`, and
-`dooh export-packs` renders the file from them. A hand edit to the `tags` array survives exactly
-until the next export. `render_catalog` reads no file at all when it renders — that circular
-read is why publishing once worked from a checkout and failed in Docker.
-
-**Publishing takes everyone's edits live.** One pack, one fingerprint; there is no such thing as
-publishing a single tag, and an endpoint shaped `/tags/{slug}/publish` would be lying about
-that. It also moves `packs_version`, so the whole catalog reverts to `calibrated: false`.
-
 **Retire, never delete.** A hard delete strands the slug in DOOH's `devices.blocked_tags` and
 every upload against that screen falls through to `NOT_VERIFIED` forever.
 
@@ -517,11 +414,6 @@ live?"*: `decision.rule` in `/api/v1/health` is computed from the bytes of the b
 this process **loaded**, once, at import. Compare it with `shasum -a 256 inference/banding.py`
 — if they differ, the server is stale and needs restarting. A server started without `--reload`
 once served a superseded rule for hours with nothing anywhere saying so.
-
-**`packs_version` fingerprints the prompt pack.** If a threshold was calibrated against a
-different pack than the one now serving, the threshold is still applied — it is the best
-available — but `calibrated` reverts to `false`, because it no longer describes the scores being
-produced.
 
 **An unknown tag is an error, never a silent skip.** If a caller misspells `alcohol` the whole
 request is refused. "We didn't check" and "we checked and it's clean" mean opposite things.

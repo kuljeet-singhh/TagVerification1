@@ -25,17 +25,14 @@ os.environ.setdefault("ADMIN_PASSWORD", "test-admin-password")
 
 # PIN THE SCORER. Not setdefault -- an unconditional set, because a real environment variable
 # outranks .env/.env.local and that is the only way to stop the developer's own configuration
-# deciding what the suite tests.
+# deciding what the suite tests. A suite whose result depends on an untracked file is not a
+# suite, and this was not hypothetical: a SCORER change in one .env.local turned ten tests red
+# on one machine and left them green on another.
 #
-# This is not hypothetical tidiness. Adding SCORER=vlm to a .env.local turned ten tests in
-# test_content_tags.py red on one machine and left them green on another: they exercise
-# publish_state, which compares the catalog against the running Space and is meaningless once
-# a VLM is scoring, so the code correctly stops asking -- and the tests correctly noticed.
-# A suite whose result depends on an untracked file is not a suite.
-#
-# Tests that want a VLM say so explicitly (see tests/test_vlm.py, which monkeypatches
-# scoring.registry.name), which is the right way round: the default is the shipped default.
-os.environ["SCORER"] = "siglip"
+# `fake` rather than a real provider: it needs no key, no network and no quota, so the suite
+# runs anywhere and costs nothing -- and it obeys the same rules the real scorers do, answering
+# `present: null` for anything it has no fixture for rather than inventing a clean pass.
+os.environ["SCORER"] = "fake"
 
 
 @pytest.fixture(scope="session")
@@ -63,8 +60,13 @@ _settings = _config.settings()
 needs_db = pytest.mark.skipif(
     not (_settings.database_url or "").strip(), reason="DATABASE_URL is not set"
 )
+# A REAL scorer, not just a configured one. `fake` answers from fixtures, so it is configured
+# by definition — but a test that asserts a genuine detection is asserting something about a
+# model, and the fake has no model in it. Letting these run against fixtures would turn a
+# meaningful assertion into a tautology, or into a failure that says nothing.
 needs_inference = pytest.mark.skipif(
-    not _settings.inference_target, reason="neither HF_SPACE nor INFERENCE_URL is set"
+    _settings.scorer == "fake" or not _settings.scorer_target,
+    reason="no real scorer configured (SCORER=fake, or no API key for SCORER/VLM_PROVIDER)",
 )
 
 

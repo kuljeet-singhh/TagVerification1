@@ -18,8 +18,6 @@ Pure: no database, no model, no network.
 
 from __future__ import annotations
 
-import ast
-import hashlib
 import re
 from pathlib import Path
 
@@ -39,14 +37,6 @@ def test_it_looks_like_a_version() -> None:
     assert re.fullmatch(r"[0-9a-f]{12}", decision_version({"alcohol": t()}))
     assert re.fullmatch(r"[0-9a-f]{12}", RULE_VERSION)
 
-
-def test_the_rule_version_describes_the_loaded_module() -> None:
-    """
-    Computed independently here. If this drifts, either the constant stopped describing
-    banding.py or somebody started hashing something else.
-    """
-    source = (ROOT / "inference" / "banding.py").read_bytes()
-    assert hashlib.sha256(source).hexdigest()[:12] == RULE_VERSION
 
 
 def test_it_is_stable_across_calls_and_dict_identity() -> None:
@@ -121,63 +111,6 @@ def test_it_does_not_expose_the_numbers() -> None:
 # ------------------------------------------------- the scorer fingerprint
 
 
-def test_the_cli_and_the_detector_agree_on_packs_version() -> None:
-    """
-    They used to be two implementations with a comment promising they matched.
-
-    The failure was silent and expensive: calibrate.py stamps the detector's value into
-    calibration.json, and `dooh apply-calibration` compares it against the CLI's. Drift does
-    not warn — it refuses to apply measured thresholds, and says the pack changed.
-
-    Checked against the source rather than by importing detector.py, which pulls in torch.
-    """
-    from tagverify.cli import packs_version
-
-    source = (ROOT / "inference" / "detector.py").read_text()
-    assert "hashlib.sha256(raw_packs" not in source
-    assert "scorer_version" in source
-    assert re.fullmatch(r"[0-9a-f]{12}", packs_version())
 
 
-def test_the_scorer_fingerprint_covers_the_scoring_code() -> None:
-    """
-    Not just the prompts. Cross-tag competition moved every score in the product without
-    touching packs.json — and caches key on this value, so a prompts-only fingerprint would
-    have left stale numbers in the database claiming to be current.
-    """
-    from inference.versioning import scorer_version
 
-    packs = ROOT / "inference" / "packs.json"
-    detector = ROOT / "inference" / "detector.py"
-    banding = ROOT / "inference" / "banding.py"
-
-    assert scorer_version(packs, detector) != scorer_version(packs, banding)
-    assert scorer_version(packs, detector) == scorer_version(packs, detector)
-
-
-def test_the_fingerprint_is_the_same_from_a_path_or_from_bytes() -> None:
-    """
-    reload_packs hashes the pack it was HANDED, because on a reload the copy on disk is the
-    stale one. The two forms have to agree, or a pushed pack would fingerprint differently
-    from the identical file `dooh export-packs` wrote — and `dooh apply-calibration` refuses
-    on exactly that mismatch, so the calibration measured against it would become unusable.
-    """
-    from inference.versioning import scorer_version
-
-    packs = ROOT / "inference" / "packs.json"
-    detector = ROOT / "inference" / "detector.py"
-
-    assert scorer_version(packs.read_bytes(), detector) == scorer_version(packs, detector)
-    assert scorer_version(b'{"tags": []}', detector) != scorer_version(packs, detector)
-
-
-def test_the_versioning_module_has_no_dependencies() -> None:
-    """Ships flat to the Space alongside banding.py, so it can only import the stdlib."""
-    tree = ast.parse((ROOT / "inference" / "versioning.py").read_text())
-    modules = {
-        node.module if isinstance(node, ast.ImportFrom) else alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-        for alias in getattr(node, "names", [None])
-    }
-    assert modules <= {"hashlib", "pathlib", "__future__"}, modules

@@ -40,12 +40,7 @@ from tagverify.analyze.aggregate import aggregate
 from tagverify.analyze.intake import Intake
 from tagverify.db.cache import find_cached, record_analysis
 from tagverify.scoring import registry
-from tagverify.scoring.base import ScorerHealth
-from tagverify.scoring.client import (
-    InferenceError,
-    analyze_image,
-    cached_inference_health,
-)
+from tagverify.scoring.base import InferenceError, ScorerHealth
 from tagverify.tags.decide import (
     Thresholds,
     Verdict,
@@ -56,11 +51,6 @@ from tagverify.tags.decide import (
 
 log = logging.getLogger(__name__)
 
-# Ceiling on the whole media, on top of the per-call CALL_TIMEOUT_S in the inference client.
-# Six frames each allowed the full 8s would otherwise let one request occupy a connection for
-# the better part of a minute. Checked BETWEEN frames, so it never interrupts a call in
-# flight — it just declines to start another one.
-TOTAL_BUDGET_S = 30.0
 
 
 def _scorer() -> str:
@@ -80,15 +70,12 @@ async def _scorer_health(session: AsyncSession) -> ScorerHealth:
     below, the cache key, the audit row and the staleness check are untouched by the swap.
     """
     scorer = registry.module()
-    if scorer is not None:
-        return await scorer.health(session)
-
-    live = await cached_inference_health()
-    return ScorerHealth(
-        tags=list(live.tags),
-        packs_version=live.packs_version,
-        model=live.model,
-    )
+    if scorer is None:
+        raise InferenceError(
+            f"SCORER={registry.name()!r} is not a scorer this build knows. "
+            f"Valid values: {', '.join(registry.KNOWN)}."
+        )
+    return await scorer.health(session)
 
 
 def _scorer_rule() -> str:
@@ -105,9 +92,9 @@ async def _score(intake: Intake, health: ScorerHealth) -> list[dict[str, Any]]:
     re-aggregates a stored video correctly, and neither knows which scorer produced the rows.
     """
     scorer = registry.module()
-    if scorer is not None:
-        return await scorer.score_frames(intake, health)
-    return await _score_frames(intake)
+    if scorer is None:
+        raise InferenceError(f"SCORER={registry.name()!r} is not a scorer this build knows.")
+    return await scorer.score_frames(intake, health)
 
 
 @dataclass(slots=True)
@@ -234,43 +221,6 @@ async def run_analysis(
         ),
         audit,
     )
-
-
-async def _score_frames(intake: Intake) -> list[dict[str, Any]]:
-    """
-    Score every frame, annotating each raw verdict with where it came from.
-
-    SEQUENTIAL, deliberately. The Space is a single queued process on two free CPU cores
-    (demo.queue in inference/app.py), so issuing frames concurrently reorders the queue
-    without shortening it, and costs us the ability to stop early on a failure.
-
-    A FRAME THAT FAILS FAILS THE WHOLE REQUEST. There is no partial result here: returning
-    verdicts computed over four of six frames, with nothing in the response saying so, is
-    "we didn't check" presented as "we checked and it's clean" — the single failure mode this
-    product exists to prevent. Both exceptions raised here are already handled by the callers
-    as a retryable 503 or a 502.
-    """
-    raw: list[dict[str, Any]] = []
-    started_at = time.monotonic()
-
-    for frame in intake.frames:
-        if frame.index > 0 and (time.monotonic() - started_at) > TOTAL_BUDGET_S:
-            raise InferenceError(
-                f"Exceeded the {TOTAL_BUDGET_S:.0f}s budget for this media after "
-                f"{frame.index} of {len(intake.frames)} frames."
-            )
-
-        analysis = await analyze_image(frame.base64, intake.tags)
-        for verdict in analysis.results:
-            row = verdict.model_dump()
-            # Only for video. An image's raw rows stay exactly the shape they have always
-            # been, so a cache entry written before this change still decodes cleanly.
-            if intake.kind == "video":
-                row["frame_index"] = frame.index
-                row["timestamp_s"] = frame.timestamp_s
-            raw.append(row)
-
-    return raw
 
 
 async def write_audit(audit: dict[str, Any]) -> None:

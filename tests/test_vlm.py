@@ -22,8 +22,7 @@ from PIL import Image
 from tagverify.analyze import intake
 from tagverify.scoring import prompt as prompt_module
 from tagverify.scoring import vlm
-from tagverify.scoring.base import ScorerHealth
-from tagverify.scoring.client import InferenceError, InferenceWarming
+from tagverify.scoring.base import InferenceError, InferenceWarming, ScorerHealth
 from tagverify.tags.decide import Thresholds, decide, decide_all, decision_version
 from tests.support.videos import encode
 
@@ -626,105 +625,10 @@ def test_switching_provider_re_keys_the_cache() -> None:
     )
 
 
-# ------------------------------------------------- a tag is a name and a sentence
-#
-# The phrases are SigLIP's QUESTION, not ceremony: it ranks an image against a pool and reports
-# which phrase won, so without a pool there is nothing to rank. A VLM reads the description and
-# answers, so it never sees them. These pin that the floor follows the scorer — and that the
-# rollback hazard the change creates stays loud.
 
 
-def test_the_phrase_floor_follows_the_active_scorer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """SigLIP cannot work without a pool; a VLM never looks at one."""
-    from tagverify.tags import catalog
-
-    monkeypatch.setattr("tagverify.scoring.registry.name", lambda: "siglip")
-    assert catalog.phrase_floors() == (catalog.MIN_POSITIVES, catalog.MIN_NEGATIVES)
-
-    monkeypatch.setattr("tagverify.scoring.registry.name", lambda: "vlm")
-    assert catalog.phrase_floors() == (0, 0)
 
 
-def test_the_floor_is_read_per_call_not_frozen_at_import(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """
-    SCORER is a flag so the two can be compared on one box. A floor captured at startup would
-    enforce whichever scorer happened to be configured when the process booted, which is the
-    kind of staleness that only shows up as a refused save nobody can explain.
-    """
-    from tagverify.tags import catalog
-
-    monkeypatch.setattr("tagverify.scoring.registry.name", lambda: "vlm")
-    assert catalog.phrase_floors() == (0, 0)
-    monkeypatch.setattr("tagverify.scoring.registry.name", lambda: "siglip")
-    assert catalog.phrase_floors() != (0, 0)
 
 
-def test_a_phraseless_tag_is_refused_under_siglip(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Not a preference — a pack entry with an empty pool scores nothing."""
-    from tagverify.tags.catalog import TagValidationError, _clean_list, phrase_floors
 
-    monkeypatch.setattr("tagverify.scoring.registry.name", lambda: "siglip")
-    min_positives, _ = phrase_floors()
-    with pytest.raises(TagValidationError, match="at least 5 positives"):
-        _clean_list([], "positives", min_positives)
-
-
-def test_a_phraseless_tag_is_allowed_under_a_vlm(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The whole point of the change: a tag is a name and a sentence."""
-    from tagverify.tags.catalog import _clean_list, phrase_floors
-
-    monkeypatch.setattr("tagverify.scoring.registry.name", lambda: "vlm")
-    min_positives, min_negatives = phrase_floors()
-    assert _clean_list([], "positives", min_positives) == []
-    assert _clean_list([], "negatives", min_negatives) == []
-
-
-def test_the_other_phrase_rules_still_apply_to_phrases_that_are_given(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """
-    Optional is not unvalidated. A duplicate is still a duplicate, and a tag half-filled under
-    a VLM must not be able to poison SigLIP's rival pool if it is ever switched back on.
-    """
-    from tagverify.tags.catalog import TagValidationError, _clean_list
-
-    monkeypatch.setattr("tagverify.scoring.registry.name", lambda: "vlm")
-    with pytest.raises(TagValidationError, match="Duplicate positive"):
-        _clean_list(["a glass of beer", "a glass of beer"], "positives", 0)
-
-
-async def test_export_packs_refuses_a_phraseless_tag_by_name() -> None:
-    """
-    The loud half of the rollback path, and it must stay loud.
-
-    A tag missing from the pack produces no verdict; dooh-backend then sees fewer verdicts than
-    the screen's blocked tags and policy.ts falls through to NOT_VERIFIED — a FLAG, not a block.
-    The screen silently stops enforcing a category its owner chose. Skipping quietly, or merely
-    warning, is how that reaches production.
-    """
-    from tagverify.tags.publish import PackExportError, render_catalog
-
-    class _Row:
-        status = "active"
-        slug = "coffee_shop"
-        positives: list[str] = []
-        negatives: list[str] = []
-
-    class _Scalars:
-        def all(self) -> list[Any]:
-            return [_Row()]
-
-    class _Session:
-        async def scalars(self, *_: Any, **__: Any) -> Any:
-            return _Scalars()
-
-    with pytest.raises(PackExportError) as caught:
-        await render_catalog(_Session())  # type: ignore[arg-type]
-
-    message = str(caught.value)
-    assert "coffee_shop" in message          # names the offender, not just a count
-    assert "retire" in message.lower()       # and says what to do about it

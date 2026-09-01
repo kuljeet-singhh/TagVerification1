@@ -26,11 +26,6 @@ from tagverify.db.models import ApiKey, ContentTag, TagThreshold
 from tagverify.db.session import get_session
 from tagverify.db.thresholds import upsert_threshold
 from tagverify.scoring import registry
-from tagverify.scoring.client import (
-    InferenceError,
-    InferenceWarming,
-    cached_inference_health,
-)
 from tagverify.tags import catalog
 from tagverify.tags.decide import invalidate_threshold_cache
 from tagverify.templating import render
@@ -64,19 +59,10 @@ async def _load(session: AsyncSession) -> dict[str, Any]:
         .scalars()
         .all()
     )
-    # Whether phrases are required at all depends on who is scoring: SigLIP ranks against them
-    # and cannot work without them, a VLM reads the description and never sees them. The form
-    # asks for what is actually needed rather than for both, so an admin is not writing
-    # eighteen strings that go nowhere. See catalog.phrase_floors().
-    min_positives, min_negatives = catalog.phrase_floors()
-
     context = {
         "keys": list(keys),
         "thresholds": list(thresholds),
         "content_tags": list(content_tags),
-        "phrases_required": bool(min_positives or min_negatives),
-        "min_positives": min_positives,
-        "min_negatives": min_negatives,
         # The form's SHAPE depends on this, so the form has to say what it is. Without it the
         # phrase fields appear and disappear according to an environment variable set on the
         # server, and someone looking at the page has no way to tell why — which reads as a
@@ -90,77 +76,19 @@ async def _load(session: AsyncSession) -> dict[str, Any]:
         "scorer_configured": settings().scorer_target is not None,
     } | await _inference_context()
 
-    # Split here rather than in the template: Jinja cannot append to a list without the `do`
-    # extension, and the banner needs the two groups counted before it renders either.
-    buckets: dict[str, list[ContentTag]] = {"absent": [], "edited": []}
-    for row in context["content_tags"]:
-        if row.status != "active":
-            continue
-        state = catalog.publish_state(row, context["live_slugs"], context["live_fingerprints"])
-        if state in buckets:
-            buckets[state].append(row)
-    return context | {"unpublished": buckets["absent"], "edited": buckets["edited"]}
+    return context
 
 
 async def _inference_context() -> dict[str, Any]:
     """
-    What the RUNNING model knows: `live_slugs` for the tag rows, and the shell rail's
-    health dot, pack fingerprint and model name.
+    The shell rail's health dot.
 
-    `live_slugs` is the slugs the model actually has, or None when we cannot find out.
-
-    This is what lets the tags panel say whether an edit is live instead of warning about it
-    unconditionally. A permanently-on warning is one people learn to scroll past, which is
-    exactly how a tag came to sit in the database unpublished with nothing pointing at it.
-
-    Deliberately asks the model rather than reading inference/packs.json. Two reasons:
-
-    1. The pack file is NOT in the production image -- the Dockerfile copies only banding.py
-       and versioning.py out of inference/ -- so reading it would work locally and raise
-       FileNotFoundError on a deployed instance.
-    2. The model's own catalog covers both ways a tag can be missing: the export never ran, or
-       it ran and the process was never restarted. The remedy is the same either way.
-
-    That second point used to end "so one comparison at this granularity is honest and two
-    would be false precision", and it was wrong. Slugs only answer whether the model has HEARD
-    of a tag. A tag that is edited keeps its slug, so rewriting every phrase in saloon left the
-    panel completely silent while the model went on matching the phrases it was given at
-    startup. `live_fingerprints` is the second comparison that paragraph talked itself out of:
-    slug -> digest of the phrases and floor the model actually holds, so an unpublished EDIT
-    shows up too. It is None on an older model tier that does not report them, and then we
-    claim nothing about edits while still flagging genuinely absent slugs -- a partial answer,
-    honestly scoped.
-
-    None means "the model did not answer", and the caller must then claim nothing. Marking
-    every tag as not-live because health timed out would be the same lie in a new coat.
-
-    The rail's health dot rides along rather than getting its own call. /admin used to set no
-    health_class at all, so base.html fell through to its "Inference unknown" default on every
-    admin page load -- a word that carried no information while the rows beside it, from this
-    same health answer, said "not live". But cached_inference_health() memoises SUCCESSES only,
-    on purpose, so asking twice would cost two 8s timeouts on one page load in exactly the
-    situation where the model is down. One call, both answers.
+    It used to ask the Space three questions -- which slugs are live, which prompt
+    fingerprints it holds, is it warm -- so the tags panel could say whether an edit had been
+    published. None of that survives a scorer that reads its prompt per request: a saved tag
+    IS live, so the question has no content and the answer would be theatre.
     """
-    # Only SigLIP has a "what does the running model hold?" question. Under a VLM the prompt
-    # is read per request, so there is nothing to compare against and nothing rendered from
-    # this -- and cached_inference_health() memoises successes ONLY, so a sleeping Space would
-    # cost an 8s timeout on every admin page load to answer a question nobody asked.
-    if registry.name() != "siglip":
-        return {"live_slugs": None, "live_fingerprints": None, "health_class": "is-ok"}
-
-    try:
-        health = await cached_inference_health()
-    except InferenceWarming:
-        return {"live_slugs": None, "live_fingerprints": None, "health_class": "is-warming"}
-    except InferenceError:
-        return {"live_slugs": None, "live_fingerprints": None, "health_class": "is-down"}
-    return {
-        "live_slugs": set(health.tags),
-        "live_fingerprints": health.prompt_fingerprints,
-        "health_class": "is-ok",
-        "packs_version": health.packs_version,
-        "model": health.model,
-    }
+    return {"health_class": "is-ok" if settings().scorer_target else "is-down"}
 
 
 # ----------------------------------------------------------------------- page
