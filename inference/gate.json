@@ -1,0 +1,68 @@
+{
+  "siglip": {
+    "arm": "siglip",
+    "images": 466,
+    "tags": 24,
+    "cross_tag_false_blocks": 146,
+    "mean_recall": 0.6883,
+    "cross_tag_by_tag": {
+      "education": 24,
+      "tobacco_smoking": 18,
+      "banking_finance": 11,
+      "alcohol": 11,
+      "sugary_drinks": 10,
+      "junk_food": 10,
+      "coffee_shop": 9,
+      "mobile_electronics": 8,
+      "restaurant_dining": 5,
+      "travel_tourism": 5,
+      "fashion_apparel": 5,
+      "jewellery": 4,
+      "saloon": 4,
+      "pharma_medicine": 4,
+      "gambling": 3,
+      "dog": 3,
+      "beauty_cosmetics": 3,
+      "gym_fitness": 2,
+      "vaping": 2,
+      "real_estate": 2,
+      "protein_supplements": 1,
+      "automotive": 1,
+      "revealing_clothing": 1
+    },
+    "recall_by_tag": {
+      "alcohol": 0.929,
+      "automotive": 0.917,
+      "banking_finance": 0.3,
+      "beauty_cosmetics": 0.4,
+      "education": 0.833,
+      "fashion_apparel": 0.5,
+      "gambling": 0.917,
+      "gym_fitness": 0.75,
+      "jewellery": 0.941,
+      "junk_food": 0.875,
+      "mobile_electronics": 0.917,
+      "pharma_medicine": 0.917,
+      "protein_supplements": 0.4,
+      "real_estate": 0.455,
+      "restaurant_dining": 0.364,
+      "revealing_clothing": 0.583,
+      "sugary_drinks": 0.917,
+      "tobacco_smoking": 0.727,
+      "travel_tourism": 0.5,
+      "vaping": 0.625
+    },
+    "tags_without_positives": [
+      "cat",
+      "coffee_shop",
+      "dog",
+      "saloon"
+    ],
+    "uncertain_positive_rate": 0.048,
+    "latency_ms": {
+      "p50": 2178,
+      "p95": 2342,
+      "max": 3120
+    }
+  }
+}
