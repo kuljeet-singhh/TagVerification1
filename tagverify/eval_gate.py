@@ -78,9 +78,12 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 BASELINE_FALSE_BLOCKS = 152
 BASELINE_MEAN_RECALL = 0.665
 
-#: Gemini answers in 5-9s and returns 503 under load. Four at a time keeps a 473-image
-#: run near ten minutes without hammering a busy model.
-CONCURRENCY = 4
+#: Gemini answers in 5-9s. Two at a time, not four: the first run at four produced a
+#: 503 on every image, and four was never tested against a working quota, so some of
+#: that was very likely self-inflicted. Two puts a 473-image arm around 25 minutes,
+#: which the resumable cache makes a non-issue. Raise it once a full arm has completed
+#: cleanly, not before.
+CONCURRENCY = 2
 RETRIES = 4
 
 
