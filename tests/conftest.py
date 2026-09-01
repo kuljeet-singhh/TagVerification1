@@ -23,6 +23,20 @@ ROOT = Path(__file__).resolve().parent.parent
 # Must be set before tagverify.config is first imported.
 os.environ.setdefault("ADMIN_PASSWORD", "test-admin-password")
 
+# PIN THE SCORER. Not setdefault -- an unconditional set, because a real environment variable
+# outranks .env/.env.local and that is the only way to stop the developer's own configuration
+# deciding what the suite tests.
+#
+# This is not hypothetical tidiness. Adding SCORER=vlm to a .env.local turned ten tests in
+# test_content_tags.py red on one machine and left them green on another: they exercise
+# publish_state, which compares the catalog against the running Space and is meaningless once
+# a VLM is scoring, so the code correctly stops asking -- and the tests correctly noticed.
+# A suite whose result depends on an untracked file is not a suite.
+#
+# Tests that want a VLM say so explicitly (see tests/test_vlm.py, which monkeypatches
+# scoring.registry.name), which is the right way round: the default is the shipped default.
+os.environ["SCORER"] = "siglip"
+
 
 @pytest.fixture(scope="session")
 def admin_password() -> str:

@@ -1,6 +1,7 @@
 {% import "_icons.html" as ico %}
 {% set t = result.thresholds[verdict.tag] %}
 {% set vetoed = verdict.decided_by == 'sigmoid_floor' %}
+{% set read = verdict.decided_by == 'vlm' %}
 
 <button type="button" class="verdict"
         data-band="{{ verdict.band }}"
@@ -19,7 +20,19 @@
     <span class="verdict-score tnum">{{ "%.3f" | format(verdict.score) }}</span>
   </div>
 
-  {% if vetoed %}
+  {% if read %}
+    {# No ruler, because no threshold was consulted. The model was asked the question and
+       answered it, so `score` is its OWN certainty rather than a similarity — drawing that
+       on an absent/uncertain/present ruler would claim a measurement that never happened,
+       which is the one thing this interface must never do. #}
+    <div class="veto">
+      <b>Read, not ranked.</b>
+      The model was asked directly and answered
+      <span class="mono">{{ 'present' if verdict.present else ('absent' if verdict.present is false else 'not sure') }}</span>,
+      reporting <span class="mono tnum">{{ "%.2f" | format(verdict.score) }}</span> confidence
+      in that answer. No threshold was applied, so there is no band to place it in.
+    </div>
+  {% elif vetoed %}
     {# A floor-vetoed verdict can have a HIGH softmax score and still read
        absent, because softmax must sum to 1 and will hand mass to a positive
        prompt purely by beating equally-irrelevant options. Drawn on the normal
@@ -64,13 +77,16 @@
   {% endif %}
 
   <p class="verdict-phrase">
-    Matched <em>&ldquo;{{ verdict.evidence.top_phrase }}&rdquo;</em>
+    {% if read %}Saw{% else %}Matched{% endif %}
+    <em>&ldquo;{{ verdict.evidence.top_phrase }}&rdquo;</em>
   </p>
 
   <div class="verdict-meta">
     <span>{{ verdict.confidence }} confidence</span>
     <span class="mono">{{ verdict.decided_by }}</span>
-    {% if not verdict.calibrated %}<span>thresholds unmeasured</span>{% endif %}
+    {% if not verdict.calibrated %}
+      <span>{{ 'not measured against the eval set' if read else 'thresholds unmeasured' }}</span>
+    {% endif %}
     {# For video, WHEN is as actionable as whether — it is what a reviewer scrubs to. #}
     {% if verdict.evidence.frame %}
       <span class="tnum">at {{ "%.1f" | format(verdict.evidence.frame.timestamp_s) }}s</span>

@@ -10,10 +10,25 @@
       <span class="chip">retired</span>
     {% else %}
       <span class="chip chip-accent">active</span>
+      {# A tag written for the VLM, which reads the description. SigLIP cannot score it at
+         all, so `dooh export-packs` refuses rather than shipping an empty pool — say so
+         HERE, where the tag is being looked at, rather than only at the point of publish. #}
+      {% if not row.positives or not row.negatives %}
+        <span class="chip chip-warn"
+              title="No phrases. The VLM reads the description, but SigLIP cannot score this tag — export-packs will refuse until it has phrases or is retired.">
+          VLM only
+        </span>
+      {% endif %}
       {# publish_state() is None when we cannot tell -- the model did not answer, or it is
          old enough not to report fingerprints -- and then we say nothing at all. Flagging
-         every row because health timed out would be worse than flagging none. #}
-      {% set published = publish_state(row, live_slugs|default(none), live_fingerprints|default(none)) %}
+         every row because health timed out would be worse than flagging none.
+
+         Skipped entirely unless SigLIP is scoring: publish_state compares this row against
+         the Space's catalog, and under a VLM that comparison answers a question nobody asked.
+         A tag written for the VLM is live the moment it is saved, so "not live" would be
+         false -- and would send someone to run a publish that changes nothing. #}
+      {% set published = publish_state(row, live_slugs|default(none), live_fingerprints|default(none))
+                         if scorer_name|default('siglip') == 'siglip' else none %}
       {% if published == 'absent' %}
         <span class="chip chip-warn" title="Saved, but the running model does not have it yet">
           not live

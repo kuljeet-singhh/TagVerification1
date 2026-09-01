@@ -29,13 +29,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tagverify.analyze import intake as intake_mod
 from tagverify.analyze.run import AnalysisSuccess, run_analysis, write_audit
 from tagverify.auth.deps import playground_rate_limit
-from tagverify.db.session import get_session
+from tagverify.db.session import get_session, session_scope
+from tagverify.scoring import registry
 from tagverify.scoring.client import (
     InferenceError,
     InferenceWarming,
     cached_inference_health,
     cached_tag_catalog,
 )
+from tagverify.tags.catalog import list_tags
 from tagverify.tags.groups import group_tags
 from tagverify.templating import render
 
@@ -46,21 +48,76 @@ DEFAULT_TAGS = ["alcohol"]
 
 
 async def _shell_context() -> dict[str, Any]:
-    """packs_version / model / health dot for the shell rail. Never raises."""
+    """
+    packs_version / model / health dot for the shell rail. Never raises.
+
+    Reports the scorer that is ACTUALLY answering. It used to ask the Space unconditionally,
+    which on a box running a VLM put SigLIP's pack fingerprint and model name in the corner of
+    every page -- the two things base.html says are "the first things to check when a score
+    looks wrong", naming a model that had not scored anything.
+    """
+    scorer = registry.module()
+    if scorer is not None:
+        # Nothing to be warm or cold: the prompt is read per request, so there is no process
+        # of ours holding a catalog. What can fail is the database the catalog lives in.
+        try:
+            async with session_scope() as session:
+                live = await scorer.health(session)
+        except Exception:  # noqa: BLE001
+            return {"health_class": "is-down"}
+        return {
+            "packs_version": live.packs_version,
+            "model": live.model,
+            "health_class": "is-ok",
+            "scorer_name": registry.name(),
+        }
+
     try:
         health = await cached_inference_health()
         return {
             "packs_version": health.packs_version,
             "model": health.model,
             "health_class": "is-ok",
+            "scorer_name": "siglip",
         }
     except InferenceWarming:
-        return {"health_class": "is-warming"}
+        return {"health_class": "is-warming", "scorer_name": "siglip"}
     except Exception:  # noqa: BLE001
-        return {"health_class": "is-down"}
+        return {"health_class": "is-down", "scorer_name": "siglip"}
 
 
 async def _catalog_context(selected: list[str]) -> dict[str, Any]:
+    """
+    The tag picker's contents, from whoever is scoring.
+
+    This mattered more than it looks. It used to read the Space's /tags unconditionally, so
+    under a VLM the picker listed the catalog SigLIP happens to hold -- which means a tag
+    authored without phrases (perfectly valid for a VLM) was missing from the picker
+    entirely, and a sleeping Space blanked a playground that was working fine.
+    """
+    scorer = registry.module()
+    if scorer is not None:
+        try:
+            async with session_scope() as session:
+                rows = await list_tags(session, include_retired=False)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "inference_down": True,
+                "warming": False,
+                "error": str(exc),
+                "tag_groups": [],
+            }
+        return {
+            "inference_down": False,
+            "tag_groups": group_tags(
+                [
+                    {"slug": r.slug, "label": r.label, "description": r.description}
+                    for r in rows
+                ]
+            ),
+            "selected": selected,
+        }
+
     try:
         catalog = await cached_tag_catalog()
     except InferenceWarming as exc:

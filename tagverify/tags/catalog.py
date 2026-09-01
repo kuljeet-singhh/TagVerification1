@@ -34,15 +34,49 @@ from tagverify.db.models import ContentTag
 
 SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
-#: Hard floors. The shipped catalog averages 6 positives / 7 negatives; its best-measured tag
-#: (`alcohol`, recall 0.93) carries 8 and 12, four of which exist purely because a photo of a
-#: hamburger scored 0.939 for alcohol until bar-food scenes were named.
+#: Hard floors -- FOR SIGLIP. The shipped catalog averages 6 positives / 7 negatives; its
+#: best-measured tag (`alcohol`, recall 0.93) carries 8 and 12, four of which exist purely
+#: because a photo of a hamburger scored 0.939 for alcohol until bar-food scenes were named.
+#:
+#: They are floors because SigLIP RANKS: it cannot answer "is there alcohol here?", only "which
+#: of these phrases fits best", so the phrase pool IS the question and a thin one is a question
+#: too vague to answer. See docs/VLM_SCORING.md 2.
 MIN_POSITIVES = 5
 MIN_NEGATIVES = 6
 
 #: Advisory floors -- below these a tag usually works, but not well.
 GOOD_POSITIVES = 8
 GOOD_NEGATIVES = 10
+
+#: Below this a description is too thin to be a prompt. Advisory, never a refusal: a short
+#: description is a weak tag, not an invalid one, and a rule that refuses teaches people to
+#: pad it to 41 characters rather than to write a better one.
+GOOD_DESCRIPTION = 40
+
+
+def phrase_floors() -> tuple[int, int]:
+    """
+    How many positives and negatives this tag actually needs, given who is scoring.
+
+    THE PHRASES ARE NOT CEREMONY, THEY ARE SIGLIP'S QUESTION. It ranks an image against a pool
+    and reports which phrase won, so without a pool there is nothing to rank and no answer.
+    That is why the floors exist and why they are hard.
+
+    A VLM reads the tag's description and answers directly, so it never sees the phrases at all
+    (`scoring/vlm.py`, `scoring/gemini.py` build their prompt from `description` alone). Asking
+    an admin for eighteen strings that are then not sent anywhere is the authoring cost of the
+    old model with none of its benefit -- so under a VLM the floor is zero and a tag is a name
+    and a sentence, which is the entire point of the change.
+
+    Read per call rather than captured at import: `SCORER` is a flag precisely so the two can be
+    compared on one box, and a floor frozen at startup would enforce whichever scorer happened
+    to be configured when the process booted.
+    """
+    from tagverify.scoring import registry
+
+    if registry.name() == "siglip":
+        return MIN_POSITIVES, MIN_NEGATIVES
+    return 0, 0
 
 #: Mirrors MAX_TAGS_PER_CALL in inference/app.py, which is the authority. Duplicated rather
 #: than imported because tagverify must never import from the model tier (see AGENTS.md);
@@ -228,8 +262,9 @@ async def validate_tag(
     if not description:
         raise TagValidationError("Description is required — it is what a screen owner sees.")
 
-    positives = _clean_list(positives, "positives", MIN_POSITIVES)
-    negatives = _clean_list(negatives, "negatives", MIN_NEGATIVES)
+    min_positives, min_negatives = phrase_floors()
+    positives = _clean_list(positives, "positives", min_positives)
+    negatives = _clean_list(negatives, "negatives", min_negatives)
 
     overlap = {p.casefold() for p in positives} & {n.casefold() for n in negatives}
     if overlap:
@@ -256,17 +291,45 @@ async def validate_tag(
         raise TagValidationError("Sigmoid floor must be between 0 and 1.")
 
     warnings = _mirror_warnings(positives, negatives)
-    if len(positives) < GOOD_POSITIVES:
+
+    if not positives or not negatives:
+        # Only reachable under a VLM (the floors above refuse it otherwise), and it is not an
+        # error there — but it is a one-way door worth naming. A phrase-less tag is invisible
+        # to SigLIP, so switching SCORER back would drop it from the pack, dooh-backend would
+        # see fewer verdicts than blocked tags, and policy.ts falls through to NOT_VERIFIED —
+        # a FLAG, not a block. Screens would quietly stop enforcing a category their owner
+        # chose. `dooh export-packs` refuses rather than lets that ship (see tags/publish.py),
+        # and this is the earlier, cheaper warning.
         warnings.append(
-            f"Only {len(positives)} positives. {GOOD_POSITIVES}+ is where tags start behaving."
+            "No phrases. This tag works with the VLM, which reads the description — but it "
+            "cannot be scored by SigLIP, so it would not survive switching SCORER back."
         )
-    if len(negatives) < GOOD_NEGATIVES:
+    else:
+        if len(positives) < GOOD_POSITIVES:
+            warnings.append(
+                f"Only {len(positives)} positives. {GOOD_POSITIVES}+ is where tags start "
+                f"behaving."
+            )
+        if len(negatives) < GOOD_NEGATIVES:
+            warnings.append(
+                f"Only {len(negatives)} negatives. The negatives do most of the work — name "
+                f"the things that get mistaken for this tag, not unrelated ones."
+            )
+
+    if len(description) < GOOD_DESCRIPTION:
+        # Load-bearing under a VLM in a way it never was under SigLIP, where it was only the
+        # blurb a screen owner read in the picker. It is now the whole question the model is
+        # asked, so a vague one is a vague verdict — and unlike a threshold there is no second
+        # knob to turn afterwards.
         warnings.append(
-            f"Only {len(negatives)} negatives. The negatives do most of the work — name the "
-            f"things that get mistaken for this tag, not unrelated ones."
+            "The description is short. It is what the model is actually asked, so name the "
+            "thing, name its boundary, and say what does NOT count."
         )
     rationale = (rationale or "").strip() or None
-    if not rationale:
+    # Only worth asking for when there ARE negatives to justify. On a phrase-less tag it read
+    # "say why these negatives were chosen" about an empty list, which is the kind of advice
+    # that teaches people to stop reading the warnings.
+    if not rationale and negatives:
         warnings.append(
             "No rationale recorded. Saying why these negatives were chosen is what stops the "
             "next person undoing a fix they cannot see."

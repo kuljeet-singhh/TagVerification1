@@ -8,8 +8,19 @@ cannot apply to one path and not the other.
 
 A video is the same pipeline with more than one frame: each frame is scored independently and
 decided independently, and only then are the per-frame verdicts collapsed by
-tagverify/analyze/aggregate.py. Nothing between here and the model knows the difference — the Space
-still only ever receives a single still.
+tagverify/analyze/aggregate.py. Nothing between here and the model knows the difference.
+
+WHICH SCORER ANSWERS IS A CONFIG FLAG, AND THIS FILE IS WHERE IT IS READ.
+Exactly two things differ between them, and they are `_scorer_health` and `_score` below: what
+can be scored, and the raw rows. Everything else — the unknown-tag gate, the result cache, the
+audit row, the collapse and the response shape — is written once and runs identically either
+way. That is deliberate: the two have to be comparable on the same box against the same eval
+set, and a rollback has to be an environment variable rather than a release.
+
+How frames reach the scorer differs and does not matter here. SigLIP takes one still per call,
+because the Space is a single queued process; a VLM takes all of them in one request, because
+a round trip is the expensive part. Both return a verdict PER FRAME, which is what keeps
+aggregate.py the only thing that collapses them (AGENTS.md rule 10).
 
 Raises InferenceWarming / InferenceError; callers translate those into an HTTP status or a
 UI message.
@@ -28,6 +39,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tagverify.analyze.aggregate import aggregate
 from tagverify.analyze.intake import Intake
 from tagverify.db.cache import find_cached, record_analysis
+from tagverify.scoring import registry
+from tagverify.scoring.base import ScorerHealth
 from tagverify.scoring.client import (
     InferenceError,
     analyze_image,
@@ -48,6 +61,53 @@ log = logging.getLogger(__name__)
 # the better part of a minute. Checked BETWEEN frames, so it never interrupts a call in
 # flight — it just declines to start another one.
 TOTAL_BUDGET_S = 30.0
+
+
+def _scorer() -> str:
+    return registry.name()
+
+
+async def _scorer_health(session: AsyncSession) -> ScorerHealth:
+    """
+    Seam one: what can be scored, and the fingerprint of the question.
+
+    Under SigLIP all three answers come off the Space's /health, because the phrase pack lives
+    in that process's memory and nothing else can see it. Under a VLM the catalog IS the
+    question, so they are a database read and a hash — which is why saving a tag makes it live
+    and there is no publish step to forget.
+
+    Everything downstream reads the same three fields either way, so the unknown-tag gate
+    below, the cache key, the audit row and the staleness check are untouched by the swap.
+    """
+    scorer = registry.module()
+    if scorer is not None:
+        return await scorer.health(session)
+
+    live = await cached_inference_health()
+    return ScorerHealth(
+        tags=list(live.tags),
+        packs_version=live.packs_version,
+        model=live.model,
+    )
+
+
+def _scorer_rule() -> str:
+    """The active scorer's half of `decision_version`. See scoring/registry.rule()."""
+    return registry.rule()
+
+
+async def _score(intake: Intake, health: ScorerHealth) -> list[dict[str, Any]]:
+    """
+    Seam two: raw per-tag rows, one set per frame.
+
+    Both branches return the same list-of-dicts, carrying `frame_index` / `timestamp_s` for
+    video only — so `aggregate.py` remains the sole owner of the collapse, the result cache
+    re-aggregates a stored video correctly, and neither knows which scorer produced the rows.
+    """
+    scorer = registry.module()
+    if scorer is not None:
+        return await scorer.score_frames(intake, health)
+    return await _score_frames(intake)
 
 
 @dataclass(slots=True)
@@ -105,7 +165,7 @@ async def run_analysis(
 
     # Memoised for 60s. The pack fingerprint is part of the cache key and the tag list gates
     # validation, so both are needed before anything else happens.
-    health = await cached_inference_health()
+    health = await _scorer_health(session)
 
     unknown = [tag for tag in tags if tag not in health.tags]
     if unknown:
@@ -121,7 +181,7 @@ async def run_analysis(
     if cached is not None:
         raw = cached.results
     else:
-        raw = await _score_frames(intake)
+        raw = await _score(intake, health)
 
     # Decide EVERY frame, then collapse. Deciding first is what lets the sigmoid floor veto a
     # frame before it can win on score alone; see tagverify/analyze/aggregate.py.
@@ -161,7 +221,7 @@ async def run_analysis(
             image_bytes=intake.bytes,
             model=health.model,
             packs_version=health.packs_version,
-            decision_version=decision_version(thresholds),
+            decision_version=decision_version(thresholds, _scorer_rule()),
             cached=cached is not None,
             latency_ms=latency_ms,
             verdicts=verdicts,

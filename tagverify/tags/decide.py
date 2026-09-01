@@ -77,11 +77,25 @@ class FrameRef:
 @dataclass(slots=True)
 class Evidence:
     top_phrase: str
-    crop: list[float]
-    sigmoid: float
+    #: Both None under a VLM, which reports what it SAW rather than which of ten crops best
+    #: matched which canned phrase. Optional rather than removed, because the SigLIP path
+    #: still fills them and dooh-backend already tolerates null in both
+    #: (content-verification/client.ts guards `crop` with Array.isArray and passes `sigmoid`
+    #: through a numeric coercion), so no consumer changes.
+    crop: list[float] | None
+    sigmoid: float | None
     #: None for a still. Set for video, and it is the WHOLE point of the video path: "contains
     #: alcohol" is not actionable, "contains alcohol at 4.2s, in this crop" is.
     frame: FrameRef | None = None
+
+
+#: What decided a verdict. `inference/banding.py` owns the two SigLIP mechanisms and is left
+#: alone on purpose: its bytes are RULE_VERSION, so adding a member there would move
+#: `decision_version` for the SigLIP path too and re-key every cached verdict in this service
+#: AND in dooh-backend for a scorer that is not even switched on. It is also the one file that
+#: is git-subtree-pushed to the Space, which has no concept of a VLM. So the union is widened
+#: here, where the extra mechanism actually exists.
+VerdictSource = DecidedBy | str
 
 
 @dataclass(slots=True)
@@ -91,7 +105,7 @@ class Verdict:
     present: bool | None
     score: float
     confidence: Confidence
-    decided_by: DecidedBy
+    decided_by: VerdictSource
     #: False when this tag's thresholds have never been calibrated against labelled data.
     #: Surfaced to callers on purpose — an uncalibrated verdict is a guess and should not be
     #: presented as a measurement.
@@ -162,6 +176,17 @@ def decide(
     """
     t = threshold or FALLBACK
 
+    # A VLM answered the question rather than scoring a resemblance to it, so there is no
+    # number to band and nothing to compare against a cutoff. Branch BEFORE the threshold
+    # work, not inside it: `band_of` would read a `sigmoid` that does not exist, and passing
+    # it a self-reported confidence would silently reinterpret a different quantity as a
+    # similarity. See tagverify/scoring/vlm.py.
+    #
+    # Staleness still applies below via `calibrated`, so AGENTS.md rule 4 is untouched: a tag
+    # nobody has run against the eval set still reports calibrated: false.
+    if raw.get("decided_by") == "vlm":
+        return _decide_vlm(raw, t, live_packs_version)
+
     # A threshold is only meaningful for the prompts it was measured against. Editing a pack
     # changes the scores the model produces, so a threshold calibrated against an older pack
     # no longer describes anything — and this drifts silently: calibrate, apply, forget to
@@ -195,6 +220,77 @@ def decide(
             top_phrase=raw["top_phrase"],
             crop=list(raw["crop"]),
             sigmoid=sigmoid,
+            frame=(
+                FrameRef(int(raw["frame_index"]), float(raw["timestamp_s"]))
+                if "frame_index" in raw
+                else None
+            ),
+        ),
+    )
+
+
+#: Confidence bands for a self-reported certainty. Not the SigLIP bands, and not comparable to
+#: them: `confidence_of` measures MARGIN past a calibrated cutoff, which is meaningless when
+#: there is no cutoff. These read the model's own 0-1 certainty directly.
+#:
+#: Triage only. Nothing enforces on `confidence` -- dooh-backend branches on `present` alone --
+#: so these numbers cannot block or clear a creative. They exist so a reviewer can sort the
+#: queue by "answered, but barely".
+VLM_HIGH = 0.85
+VLM_MEDIUM = 0.60
+
+
+def _decide_vlm(
+    raw: dict[str, Any],
+    t: Thresholds,
+    live_packs_version: str | None,
+) -> Verdict:
+    """
+    A verdict the model already reached. No banding, no floor, no thresholds.
+
+    `present` is carried through EXACTLY as the model gave it, including None. That is the
+    line AGENTS.md rule 1 draws and this path makes it native rather than derived: under
+    SigLIP "uncertain" was the gap between two cutoffs, here it is an answer the model chose
+    to give. Flattening it to False anywhere between here and the API would turn "we could not
+    tell" into "we checked and it is clean", which is the failure this product exists to
+    prevent.
+    """
+    present = raw["present"]
+    if present is not None and not isinstance(present, bool):
+        # Belt and braces behind the schema. A stringy "true" is not a decision; treating it
+        # as one is how a wrong verdict gets served with full confidence.
+        raise ValueError(f"{raw.get('tag')!r}: present must be a bool or None, got {present!r}")
+
+    score = float(raw["score"])
+
+    if present is None:
+        # An uncertain verdict has no margin to measure, exactly as in confidence_of().
+        confidence: Confidence = "low"
+    elif score >= VLM_HIGH:
+        confidence = "high"
+    elif score >= VLM_MEDIUM:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    stale = bool(live_packs_version) and bool(t.packs_version_seen) and (
+        t.packs_version_seen != live_packs_version
+    )
+
+    return Verdict(
+        tag=raw["tag"],
+        present=present,
+        score=score,
+        confidence=confidence,
+        decided_by="vlm",
+        calibrated=t.calibrated and not stale,
+        band="present" if present else ("absent" if present is False else "uncertain"),
+        evidence=Evidence(
+            top_phrase=raw["top_phrase"],
+            # No crops and no sigmoid to report. Null, not zero: a zero would read as a
+            # measured absence of resemblance rather than a question never asked.
+            crop=None,
+            sigmoid=None,
             frame=(
                 FrameRef(int(raw["frame_index"]), float(raw["timestamp_s"]))
                 if "frame_index" in raw
@@ -254,7 +350,10 @@ async def cached_thresholds(session: AsyncSession) -> dict[str, Thresholds]:
     return value
 
 
-def decision_version(thresholds: dict[str, Thresholds]) -> str:
+def decision_version(
+    thresholds: dict[str, Thresholds],
+    scorer_rule: str = "",
+) -> str:
     """
     Fingerprint of everything that turns a raw score into a verdict.
 
@@ -294,11 +393,26 @@ def decision_version(thresholds: dict[str, Thresholds]) -> str:
     frames decides which pixels are scored at all — a verdict input that neither fingerprint
     used to describe. See that constant for why it lives here and not with the prompts.
 
+    `scorer_rule` IS THE VLM's HALF OF THE SAME IDEA. Under SigLIP the whole rule is
+    `banding.py` plus the cutoffs. Under a VLM there are no cutoffs, and the rule is the prompt
+    template, the response schema and the confidence bands above -- so the caller passes a
+    fingerprint of those and it folds in here. Same contract, different inputs.
+
+    IT APPENDS ONLY WHEN NON-EMPTY, and that is load-bearing rather than tidy. An empty
+    `scorer_rule` has to produce the byte-identical digest this function returned before the
+    argument existed, or simply ADDING the VLM path -- switched off, behind a flag nobody has
+    flipped -- would re-key every cached verdict in this service and in dooh-backend. A cache
+    invalidation is cheap; one triggered by a change that cannot affect a single verdict is
+    just noise, and noise is how a real re-key later gets ignored.
+
     NOT A LEAK. This is a one-way hash, truncated to 48 bits. AGENTS.md rule 6 forbids exposing
     thresholds through the API, and a digest of them is not them: you cannot read a cutoff back
     out, and a caller tuning a creative against it learns nothing.
     """
-    digest = hashlib.sha256(f"{RULE_VERSION}|{SAMPLER_VERSION}".encode())
+    seed = f"{RULE_VERSION}|{SAMPLER_VERSION}"
+    if scorer_rule:
+        seed += f"|{scorer_rule}"
+    digest = hashlib.sha256(seed.encode())
 
     def fold(key: str, t: Thresholds) -> None:
         digest.update(f"|{key}".encode())

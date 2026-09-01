@@ -27,6 +27,19 @@ dependencies = [
     # Its wheels bundle ffmpeg statically, so there is no system package and no Dockerfile
     # change. ~18MB, against ~2GB for the ML stack it is often confused with.
     "av>=13",
+    # The VLM scorer (tagverify/scoring/vlm.py, SCORER=vlm). An HTTP client with pydantic
+    # models, ~1MB — it is NOT a breach of the "never add torch/transformers/gradio here"
+    # rule, which exists so that serving HTTP does not require the ML stack. Nothing is
+    # loaded, nothing is downloaded, and the two-tier split is untouched while SCORER=siglip
+    # remains the default. httpx is already a dependency, so the incremental cost is close to
+    # zero.
+    "anthropic>=0.40",
+    # The other half of the same scorer (tagverify/scoring/gemini.py, VLM_PROVIDER=gemini).
+    # Both providers are dependencies rather than extras on purpose: the stage-2 gate scores
+    # the same images with both and picks on the numbers, which cannot happen if installing
+    # the loser is a separate step. Same reasoning as `anthropic` above — HTTP clients, not
+    # the ML stack, so the two-tier rule is untouched.
+    "google-genai>=2.0",
     "typer>=0.15",
 ]
 

@@ -69,6 +69,11 @@
         {% endif %}
         {% for verdict in result.verdicts %}
           {% set crop = verdict.evidence.crop %}
+          {# A VLM reports what it SAW, not which of ten crops matched, so there is no
+             region to draw. Skip the overlay rather than defaulting it to the whole
+             frame: a box covering everything reads as "found here", which is a claim
+             nothing made. The caption below already explains the absence. #}
+          {% if crop %}
           {# Coloured by its own band, so the overlay also answers "and what was
              the verdict there?" without a trip back to the list. #}
           <span class="crop-box" data-tag="{{ verdict.tag }}"
@@ -83,6 +88,7 @@
                        height:{{ ((crop[3] - crop[1]) * 100) | round(2) }}%">
             <span class="crop-label">{{ verdict.tag }} · {{ "%.3f" | format(verdict.score) }}</span>
           </span>
+          {% endif %}
         {% endfor %}
       </div>
       <figcaption class="evidence-caption" id="evidence-caption">

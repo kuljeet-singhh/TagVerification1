@@ -76,6 +76,28 @@ async def render_catalog(session: AsyncSession) -> str:
             "disable content checking everywhere rather than change it."
         )
 
+    phraseless = [r.slug for r in rows if not r.positives or not r.negatives]
+    if phraseless:
+        # A tag authored while a VLM was scoring needs no phrases, because a VLM reads the
+        # description instead (docs/VLM_SCORING.md 2). SigLIP cannot: a pack entry with an
+        # empty pool has nothing to rank, so the tag would score NOTHING while looking
+        # perfectly present in the file.
+        #
+        # REFUSE, do not skip, and do not merely warn. Downstream, a tag missing from the pack
+        # produces no verdict, dooh-backend sees fewer verdicts than the screen's blocked tags
+        # and policy.ts falls through to NOT_VERIFIED — which is a FLAG, not a block. The
+        # screen quietly stops enforcing a category its owner chose and nothing anywhere says
+        # so. That is the failure mode in TAG_PIPELINE_IN_PRODUCTION.md 5, and this is the last
+        # point at which it is still visible and cheap to fix.
+        listed = ", ".join(f"“{slug}”" for slug in sorted(phraseless))
+        raise PackExportError(
+            f"{len(phraseless)} active tag(s) have no positives or negatives and cannot be "
+            f"scored by SigLIP: {listed}. They were written for the VLM, which reads the "
+            f"description instead. Publishing would put them in the pack with an empty pool, "
+            f"where they would score nothing and every screen blocking them would silently "
+            f"stop enforcing. Either give them phrases, or retire them before publishing."
+        )
+
     header = await session.scalar(select(PackHeader.body).where(PackHeader.id == 1))
     if not header:
         raise PackExportError(

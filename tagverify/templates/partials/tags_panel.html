@@ -16,7 +16,13 @@
      went on matching the old ones. `unpublished` is a tag the model has never heard of;
      `edited` is one it has, under different words. Same remedy, but the second is invisible
      without a per-tag fingerprint -- see catalog.publish_state. #}
-  {% if live_slugs is none %}
+  {# The entire publish banner is a SigLIP concept: it exists because that model encodes its
+     prompts at import and cannot see Postgres, so a saved tag is not yet a scored tag. A VLM
+     reads its prompt per request, so a saved tag IS live and there is nothing to publish --
+     rendering "not live yet" there would be false, and false in the direction that sends
+     someone off to run a command that no longer does anything. #}
+  {% if scorer_name != 'siglip' %}
+  {% elif live_slugs is none %}
     <div class="callout callout-warn">
       <strong>Cannot tell what is live.</strong>
       The model is not answering, so this list may not match what is actually being scored.
@@ -64,12 +70,41 @@
         hx-disabled-elt="find button">
     <div>
       <h3>Add a tag</h3>
-      <p class="small muted" style="margin-top:3px">
-        A tag is its phrases. The <strong>negatives</strong> do most of the work: name the
-        things that get <em>mistaken</em> for it, and mirror the positives&rsquo; wording
-        &mdash; if a positive says &ldquo;a scoop of X&rdquo;, a negative should say &ldquo;a
-        scoop of Y&rdquo;. One phrase per line.
-      </p>
+      {# The form's SHAPE depends on the scorer, so the form says which one. Without this the
+         phrase fields appear and disappear according to a server-side environment variable and
+         the page gives no reason, which reads as a broken form rather than as a mode. Muted
+         text, not a callout: this is orientation, and colour in this interface means a
+         verdict. #}
+      {% if not scorer_configured %}
+        <p class="small" style="margin-top:3px; color:var(--present-fg)">
+          <strong>{{ scorer_label }} is selected but not configured.</strong>
+          Nothing can be scored until its API key is set. Tags saved now will still be here.
+        </p>
+      {% elif scorer_name == 'siglip' %}
+        <p class="small muted" style="margin-top:3px">
+          <strong>SigLIP is scoring.</strong> It ranks the image against a pool of phrases, so
+          the phrases are the question and are required.
+        </p>
+      {% else %}
+        <p class="small muted" style="margin-top:3px">
+          <strong>{{ scorer_model }} is scoring.</strong> It reads the description, so phrases
+          are not used &mdash; they stay available for a rollback to SigLIP.
+        </p>
+      {% endif %}
+      {% if phrases_required %}
+        <p class="small muted" style="margin-top:3px">
+          A tag is its phrases. The <strong>negatives</strong> do most of the work: name the
+          things that get <em>mistaken</em> for it, and mirror the positives&rsquo; wording
+          &mdash; if a positive says &ldquo;a scoop of X&rdquo;, a negative should say &ldquo;a
+          scoop of Y&rdquo;. One phrase per line.
+        </p>
+      {% else %}
+        <p class="small muted" style="margin-top:3px">
+          A tag is a name and a sentence. The <strong>description</strong> is what the model is
+          actually asked, so name the thing, name its boundary, and say what does
+          <em>not</em> count. It works the moment you save &mdash; there is no publish step.
+        </p>
+      {% endif %}
     </div>
 
     {# Label first: the slug is DERIVED from it, so leading with the derived value would ask
@@ -101,16 +136,25 @@
              autocomplete="off" value="{{ form.description if form else '' }}">
     </div>
 
+    {# Collapsed, not removed, when a VLM is scoring. The columns stay populated so a rollback
+       to SigLIP is a config change rather than a re-authoring exercise — and a tag saved
+       without them is flagged "VLM only" in the table, because export-packs will refuse it. #}
+    {% if not phrases_required %}<details class="stack gap-3"><summary class="small muted">
+      Phrases &mdash; only used by SigLIP, not by the model currently scoring
+    </summary>{% endif %}
+
     <div class="row gap-3 wrap-row">
       <div class="field" style="flex:1;min-width:260px">
         <label for="tag-positives">Positives &mdash; what we are hunting</label>
-        <textarea class="input" id="tag-positives" name="positives" rows="6" required
+        <textarea class="input" id="tag-positives" name="positives" rows="6"
+                  {% if phrases_required %}required{% endif %}
                   placeholder="a bag of dog food&#10;a cat sitting in a pet carrier"
                   >{{ form.positives if form else '' }}</textarea>
       </div>
       <div class="field" style="flex:1;min-width:260px">
         <label for="tag-negatives">Negatives &mdash; what gets mistaken for it</label>
-        <textarea class="input" id="tag-negatives" name="negatives" rows="6" required
+        <textarea class="input" id="tag-negatives" name="negatives" rows="6"
+                  {% if phrases_required %}required{% endif %}
                   placeholder="a bag of rice&#10;a wild animal in a forest"
                   >{{ form.negatives if form else '' }}</textarea>
       </div>
@@ -122,6 +166,8 @@
                 placeholder="Records what you measured, so the next person does not undo it."
                 >{{ form.rationale if form else '' }}</textarea>
     </div>
+
+    {% if not phrases_required %}</details>{% endif %}
 
     <div class="row gap-3" style="align-items:flex-end">
       <button class="btn btn-primary" type="submit">

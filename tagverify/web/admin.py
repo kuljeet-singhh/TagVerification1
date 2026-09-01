@@ -21,9 +21,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tagverify.auth import admin as auth
 from tagverify.auth.deps import TAGS_WRITE, client_ip
 from tagverify.auth.keys import create_api_key, revoke_api_key
+from tagverify.config import settings
 from tagverify.db.models import ApiKey, ContentTag, TagThreshold
 from tagverify.db.session import get_session
 from tagverify.db.thresholds import upsert_threshold
+from tagverify.scoring import registry
 from tagverify.scoring.client import (
     InferenceError,
     InferenceWarming,
@@ -62,10 +64,30 @@ async def _load(session: AsyncSession) -> dict[str, Any]:
         .scalars()
         .all()
     )
+    # Whether phrases are required at all depends on who is scoring: SigLIP ranks against them
+    # and cannot work without them, a VLM reads the description and never sees them. The form
+    # asks for what is actually needed rather than for both, so an admin is not writing
+    # eighteen strings that go nowhere. See catalog.phrase_floors().
+    min_positives, min_negatives = catalog.phrase_floors()
+
     context = {
         "keys": list(keys),
         "thresholds": list(thresholds),
         "content_tags": list(content_tags),
+        "phrases_required": bool(min_positives or min_negatives),
+        "min_positives": min_positives,
+        "min_negatives": min_negatives,
+        # The form's SHAPE depends on this, so the form has to say what it is. Without it the
+        # phrase fields appear and disappear according to an environment variable set on the
+        # server, and someone looking at the page has no way to tell why — which reads as a
+        # bug in the form rather than as the mode it is in.
+        "scorer_name": registry.name(),
+        "scorer_label": registry.describe(),
+        "scorer_model": registry.model_label(),
+        # A half-configuration (SCORER=vlm with no API key) drops the phrase requirement while
+        # leaving nothing able to score. Surfaced so that shows up here, on the page where a
+        # tag is being written, rather than at the first upload.
+        "scorer_configured": settings().scorer_target is not None,
     } | await _inference_context()
 
     # Split here rather than in the template: Jinja cannot append to a list without the `do`
@@ -119,6 +141,13 @@ async def _inference_context() -> dict[str, Any]:
     on purpose, so asking twice would cost two 8s timeouts on one page load in exactly the
     situation where the model is down. One call, both answers.
     """
+    # Only SigLIP has a "what does the running model hold?" question. Under a VLM the prompt
+    # is read per request, so there is nothing to compare against and nothing rendered from
+    # this -- and cached_inference_health() memoises successes ONLY, so a sleeping Space would
+    # cost an 8s timeout on every admin page load to answer a question nobody asked.
+    if registry.name() != "siglip":
+        return {"live_slugs": None, "live_fingerprints": None, "health_class": "is-ok"}
+
     try:
         health = await cached_inference_health()
     except InferenceWarming:
@@ -387,7 +416,7 @@ async def _tag_row(
     return render(
         request,
         "partials/tag_row.html",
-        {"row": row} | await _inference_context() | extra,
+        {"row": row, "scorer_name": registry.name()} | await _inference_context() | extra,
     )
 
 

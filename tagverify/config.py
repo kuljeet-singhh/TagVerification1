@@ -26,11 +26,41 @@ class Settings(BaseSettings):
 
     database_url: str | None = None
 
+    # Which scorer decides a verdict. "siglip" is the default and stays the default until the
+    # VLM has been measured against the eval set -- see docs/VLM_SCORING.md 9, stage 2. A flag
+    # rather than a deploy is deliberate: the two can be compared on the same box, and a
+    # rollback is an env var rather than a release.
+    #
+    #   siglip  the SigLIP 2 Space (tagverify/scoring/client.py)
+    #   vlm     a vision language model, read per request (tagverify/scoring/vlm.py)
+    #   fake    canned verdicts from a fixture (tagverify/scoring/fake.py) -- offline
+    #           development and tests only, never a deployment
+    scorer: str = "siglip"
+
     # Inference target. HF_SPACE wins when both are set; INFERENCE_URL is the local-dev
     # escape hatch that lets you run `python inference/app.py` without deploying.
     hf_space: str | None = None
     inference_url: str | None = None
     hf_token: str | None = None
+
+    # The VLM scorer. Provider and model are config, not code, because docs/VLM_SCORING.md 6.1
+    # makes them a swappable detail: the argument is for a model that READS its prompt per
+    # request, and which one does the reading is settled by the eval harness rather than by
+    # preference. Both providers share the prompt, the schema and every failure rule -- only
+    # the SDK call differs -- so a switch is one env var and the numbers stay comparable.
+    #
+    #   anthropic  tagverify/scoring/vlm.py     needs ANTHROPIC_API_KEY
+    #   gemini     tagverify/scoring/gemini.py  needs GEMINI_API_KEY
+    #
+    # VLM_MODEL is NOT defaulted per provider on purpose: a model id that silently does not
+    # match the provider is the kind of mistake that shows up as a bill rather than an error.
+    # Set both together. Suggested pairs: claude-opus-5 / gemini-3.7-flash, and locally
+    # claude-haiku-4-5 or gemini-2.5-flash-lite -- development traffic does not need the top
+    # tier, and every playground click is billed.
+    vlm_provider: str = "anthropic"
+    vlm_model: str = "claude-opus-5"
+    anthropic_api_key: str | None = None
+    gemini_api_key: str | None = None
 
     # Absent means /admin refuses access rather than opening it. See tagverify/auth/admin.py.
     admin_password: str | None = None
@@ -53,6 +83,33 @@ class Settings(BaseSettings):
     def inference_target(self) -> str | None:
         """Where to reach the inference service, or None if neither is configured."""
         return (self.hf_space or "").strip() or (self.inference_url or "").strip() or None
+
+    @property
+    def scorer_target(self) -> str | None:
+        """
+        What the ACTIVE scorer needs in order to work, or None if it is not configured.
+
+        The same question `inference_target` answers, asked of whichever scorer is switched
+        on, so `/api/v1/health` and `dooh health` keep reporting a real answer rather than
+        one that is only true of SigLIP. An unknown `SCORER` value reports None -- not
+        configured -- rather than falling back to a scorer nobody asked for: silently
+        scoring with something other than what was requested is the sort of thing that gets
+        noticed a month later.
+        """
+        match (self.scorer or "").strip().lower():
+            case "siglip":
+                return self.inference_target
+            case "vlm":
+                key = (
+                    self.gemini_api_key
+                    if self.vlm_provider.strip().lower() == "gemini"
+                    else self.anthropic_api_key
+                )
+                return (key or "").strip() and f"{self.vlm_provider}:{self.vlm_model}" or None
+            case "fake":
+                return "fake"
+            case _:
+                return None
 
 
 @lru_cache(maxsize=1)

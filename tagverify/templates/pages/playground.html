@@ -8,11 +8,23 @@
   <div class="page-head">
     <span class="eyebrow">Playground</span>
     <h1>Does this creative contain what it&rsquo;s tagged with?</h1>
-    <p>
-      Each tag&rsquo;s prompts compete against hand-written hard negatives &mdash; whiskey has
-      to beat juice &mdash; and the image is scored whole plus as nine overlapping crops, so a
-      bottle in the corner of a billboard still registers.
-    </p>
+    {# Two different machines, so two different explanations. Describing crops and hard
+       negatives while a VLM is scoring would explain a mechanism that is not running --
+       and this paragraph is the page's answer to "why did it say that?". #}
+    {% if scorer_name|default('siglip') == 'siglip' %}
+      <p>
+        Each tag&rsquo;s prompts compete against hand-written hard negatives &mdash; whiskey has
+        to beat juice &mdash; and the image is scored whole plus as nine overlapping crops, so a
+        bottle in the corner of a billboard still registers.
+      </p>
+    {% else %}
+      <p>
+        Each tag is a sentence, and the model reads the image and answers it &mdash; so a
+        verdict comes back with what was actually seen, not which phrase ranked highest. It can
+        also answer &ldquo;not sure&rdquo;, which sends the creative to a human rather than
+        guessing.
+      </p>
+    {% endif %}
   </div>
 
   <div class="pg-grid">

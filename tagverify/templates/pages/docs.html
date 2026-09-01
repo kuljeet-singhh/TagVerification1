@@ -416,15 +416,20 @@ headers = {"Cookie": f"dooh_admin={cookie}", "X-CSRF-Token": csrf}') }}
           <dd>What a screen owner sees when choosing what to block.</dd>
 
           <dt>description<span class="req">required</span></dt>
-          <dd>One line, also shown to a screen owner.</dd>
+          <dd>One line, shown to a screen owner &mdash; and, under the VLM scorer, the whole of
+              what the model is asked. Name the thing, name its boundary, and say what does
+              <em>not</em> count.</dd>
 
-          <dt>positives<span class="req">required</span></dt>
-          <dd>At least 5 phrases describing what you are hunting. 8 or more is where tags
-              start behaving.</dd>
+          <dt>positives<span class="req">SigLIP only</span></dt>
+          <dd>At least 5 phrases describing what you are hunting; 8 or more is where tags start
+              behaving. <strong>Required only while the SigLIP scorer is running</strong>, which
+              ranks an image against them. The VLM scorer reads the description instead and
+              never sees these, so a tag authored for it may omit them.</dd>
 
-          <dt>negatives<span class="req">required</span></dt>
-          <dd>At least 6 phrases naming what gets <em>mistaken</em> for it. These do most of
-              the work &mdash; see <a href="#tags-writing">below</a>.</dd>
+          <dt>negatives<span class="req">SigLIP only</span></dt>
+          <dd>At least 6 phrases naming what gets <em>mistaken</em> for it. Under SigLIP these
+              do most of the work &mdash; see <a href="#tags-writing">below</a>. Ignored by the
+              VLM scorer, on the same terms as <code>positives</code>.</dd>
 
           <dt>rationale</dt>
           <dd>Why these negatives. Optional, and worth writing: it is what stops the next
