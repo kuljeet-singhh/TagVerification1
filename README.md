@@ -80,7 +80,7 @@ That was not always true. Until 2026-09-01 a SigLIP 2 detector ranked each image
 of hand-written phrases encoded into embeddings at startup, on a machine with no database
 access, so every tag needed 5+ positives, 6+ hard negatives, a calibrated threshold and a
 `dooh export-packs --push` before it scored anything. All of it existed to carry that pool
-across a tier boundary. See `docs/VLM_SCORING.md`.
+across a tier boundary.
 
 ## Repository layout
 
@@ -92,22 +92,8 @@ across a tier boundary. See `docs/VLM_SCORING.md`.
 | `tagverify/analyze/video.py` | Decoding a video and choosing which frames are worth scoring. Keyframes, then a colour-aware dedupe. |
 | `tagverify/analyze/aggregate.py` | The rule that collapses per-frame verdicts into one per tag. Pure — no I/O, no database — so it is tested exhaustively and cheaply. |
 | `inference/` | **Data only — no code runs from here.** `eval/` holds the labelled images; `gate_cache.json` banks the SigLIP baseline the removal was judged against (146 cross-tag false blocks, 0.688 mean recall over 466 images); `phrase_packs_archive.json` holds the packs themselves, dumped the moment before migration 0003 dropped the columns. The measurement outlives the code. The detector is preserved on `main`. |
-| `migrations/` | Alembic. Brings an **existing** database forward; a new one is provisioned from `docs/schema.sql`. |
+| `migrations/` | Alembic. Brings an **existing** database forward; a new one is provisioned from the schema file. |
 | `tests/` | pytest. Runs against the ASGI app in-process; tests needing the database or the model skip cleanly when those are not configured. |
-
-### `docs/`
-
-| File | What it is |
-|---|---|
-| [`VLM_SCORING.md`](docs/VLM_SCORING.md) | **Start here for how scoring works.** The design of the reading-model path: why a ranking model was replaced, the prompt, the schema, the cost model, and §5.2's plan for an eval harness that writes calibration back. |
-| [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Exhaustive `file:line` reference for every module, route, table and constant. **Stale in places** — it predates the VLM rewrite and still documents threshold routes and partials that no longer exist. It describes; it does not govern. |
-| [`DEPLOY.md`](docs/DEPLOY.md) | Deployment, end to end: installing and supervising the process, the environment it needs, provisioning the database, issuing keys, and what to check afterwards. |
-| [`schema.sql`](docs/schema.sql) | The schema as it should *be* — provisions a new database by hand. |
-| [`TAG_PIPELINE_IN_PRODUCTION.md`](docs/TAG_PIPELINE_IN_PRODUCTION.md) | The operational counterpart to `DEPLOY.md`: what bites you after the commands have run, and why. |
-| [`TAG_CRUD_IMPLEMENTATION.md`](docs/TAG_CRUD_IMPLEMENTATION.md) | The authority on what actually shipped for tag CRUD, and what implementation changed about the plan. |
-| [`TAG_MANAGEMENT_API.md`](docs/TAG_MANAGEMENT_API.md) | **Superseded** design doc. Kept for its measurements and its analysis of what a tag is; its file paths predate the `dooh` → `tagverify` rename. |
-| [`PORTING_THE_TAG_CATALOG.md`](docs/PORTING_THE_TAG_CATALOG.md) | How much of the editable-catalog feature carries to another project: the CRUD half ports as-is, the publish half does not. |
-| [`ADMIN_CREATIVE_REVIEW_SURFACE.md`](docs/ADMIN_CREATIVE_REVIEW_SURFACE.md) | Planned, not started — a DOOH admin "this ad needs review" surface. Needs no change in this repo. |
 
 **One virtualenv, now.** There used to be two on purpose — `.venv` served HTTP and
 `inference/.venv` ran a SigLIP 2 model on a Hugging Face Space, and the rule was never to let the
@@ -192,7 +178,7 @@ Monitoring you cannot reach is not monitoring.
 
 | Variable | Required | What it does |
 |---|---|---|
-| `DATABASE_URL` | yes | Postgres. Use the **pooled** connection string, and keep it in the same region as the app — see the region warning in `docs/DEPLOY.md`. |
+| `DATABASE_URL` | yes | Postgres. Use the **pooled** connection string, and keep it in the same region as the app — a cross-region hop is paid on every query. |
 | `ADMIN_PASSWORD` | yes, in practice | Gates `/admin`. **Unset means refused, never open.** |
 | `SCORER` | no | `vlm` (default) or `fake`. `fake` answers from a fixture — no key, no network, no spend — for offline work and the test suite. **Never deploy it.** `siglip` was the third value and is gone. |
 | `VLM_PROVIDER` | with `SCORER=vlm` | `anthropic` (default) or `gemini`. Both share the prompt, the schema and every failure rule; only the SDK call differs. |
@@ -494,8 +480,8 @@ tag has a current measurement, and an uncalibrated verdict is stated as the educ
 is. A measurement taken against a different `packs_version` is *stale*, not calibrated: the
 prompts were reworded underneath the answer. That comparison is `decide.effective_calibrated`
 and it lives in exactly one place, because it used to be written out three times and one of the
-copies disagreed with the other two for every stale row. `docs/VLM_SCORING.md` §5.2 is the plan
-for an eval harness that writes those columns back.
+copies disagreed with the other two for every stale row. Writing those columns back is a job
+for the eval harness, and it is not built.
 
 **An unknown tag is an error, never a silent skip.** If a caller misspells `alcohol` the whole
 request is refused. "We didn't check" and "we checked and it's clean" mean opposite things.
