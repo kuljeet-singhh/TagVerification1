@@ -21,8 +21,9 @@ dependencies = [
     "httpx>=0.28",
     "pillow>=10.0",
     # Video decoding, for sampling frames out of a video creative. A codec binding, not ML;
-    # its wheels bundle ffmpeg statically, so there is no system package and no Dockerfile
-    # change. ~18MB.
+    # its wheels bundle ffmpeg statically, so there is no system package to install and
+    # nothing to build. That, plus psycopg[binary] carrying libpq, is why deploying this is
+    # `pip install .` on any box with Python and needs no container. ~18MB.
     "av>=13",
     # The two scorer providers. Both are dependencies rather than extras on purpose: `dooh
     # gate` scores the same images with each and picks on the numbers, which cannot happen if

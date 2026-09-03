@@ -1,8 +1,9 @@
 """
 Collapsing per-frame verdicts into one per tag.
 
-This is to the video path what tests/test_banding.py is to the decision rule: if you change
-how frames combine, this file should fail. If it doesn't, the test is wrong.
+The highest-value file in the repo: if you change how frames combine, it should fail. If it
+doesn't, the test is wrong. It inherited that role from tests/test_banding.py, which went with
+the banding rule it guarded.
 
 The cases that matter are the two that produce a confident WRONG answer rather than an error —
 an uncertain frame being buried by absent ones, and a sigmoid-floor-vetoed frame winning on

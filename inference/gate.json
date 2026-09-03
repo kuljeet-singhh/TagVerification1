@@ -2,9 +2,9 @@
   "siglip": {
     "arm": "siglip",
     "images": 466,
-    "tags": 24,
-    "cross_tag_false_blocks": 146,
-    "mean_recall": 0.6883,
+    "tags": 25,
+    "cross_tag_false_blocks": 145,
+    "mean_recall": 0.6938,
     "cross_tag_by_tag": {
       "education": 24,
       "tobacco_smoking": 18,
@@ -27,8 +27,7 @@
       "vaping": 2,
       "real_estate": 2,
       "protein_supplements": 1,
-      "automotive": 1,
-      "revealing_clothing": 1
+      "automotive": 1
     },
     "recall_by_tag": {
       "alcohol": 0.929,
@@ -46,16 +45,17 @@
       "protein_supplements": 0.4,
       "real_estate": 0.455,
       "restaurant_dining": 0.364,
-      "revealing_clothing": 0.583,
       "sugary_drinks": 0.917,
       "tobacco_smoking": 0.727,
       "travel_tourism": 0.5,
       "vaping": 0.625
     },
     "tags_without_positives": [
+      "bike",
       "cat",
       "coffee_shop",
       "dog",
+      "laptop",
       "saloon"
     ],
     "uncertain_positive_rate": 0.048,

@@ -246,40 +246,6 @@
   font-variant-numeric: tabular-nums; font-weight: 600;
 }
 
-/* The threshold ruler: the single biggest legibility win over the old bar.
-   A bare `width: score%` bar cannot show that 0.512 landed inside a 0.30-0.55
-   uncertain band, or how close to an edge it was. This draws the bands
-   themselves from the tag's own thresholds and puts a marker at the score. */
-.ruler {
-  position: relative; height: 7px; margin: var(--s-3) 0 var(--s-1);
-  border-radius: var(--r-full); overflow: hidden; background: var(--surface-3);
-}
-.ruler-seg { position: absolute; top: 0; bottom: 0; }
-.ruler-absent    { background: var(--absent-line); }
-.ruler-uncertain { background: var(--uncertain-line); }
-.ruler-present   { background: var(--present-line); }
-.ruler-mark {
-  position: absolute; top: -2px; bottom: -2px; width: 3px;
-  background: var(--fg); border-radius: 2px;
-  transform: translateX(-1.5px);
-  box-shadow: 0 0 0 1.5px var(--surface);
-}
-.ruler-ticks {
-  display: flex; justify-content: space-between;
-  font-family: var(--font-mono); font-size: 10px;
-  color: var(--fg-faint); font-variant-numeric: tabular-nums;
-}
-
-/* A floor-vetoed verdict has a HIGH softmax score but reads absent. Drawing it
-   on the normal ruler produces a long bar labelled "absent", which looks like
-   a bug. It gets its own explanation instead. */
-.veto {
-  margin: var(--s-2) 0 var(--s-1); padding: var(--s-2) 10px;
-  background: var(--surface-2); border: 1px dashed var(--border-strong);
-  border-radius: var(--r-sm); font-size: var(--t-xs); color: var(--fg-subtle);
-}
-.veto b { color: var(--fg-muted); font-weight: 550; }
-
 .verdict-phrase {
   margin-top: 6px; font-size: var(--t-sm); color: var(--fg-muted);
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
@@ -466,42 +432,6 @@
   padding: 7px 10px; border-radius: var(--r-md);
   background: var(--surface); border: 1px solid var(--absent-line);
   font-family: var(--font-mono); font-size: var(--t-sm); color: var(--fg);
-}
-
-/* One <form> per row, but the headers must still line up with the cells. A
-   real <table> cannot contain a form spanning cells, and the old build solved
-   that with a colspan that destroyed the alignment. A grid with
-   `display: contents` on the form keeps both. */
-.thr-grid {
-  display: grid;
-  grid-template-columns: 150px minmax(120px, 1fr) 76px 76px 76px 130px 66px;
-  align-items: center;
-}
-.thr-grid > form { display: contents; }
-.thr-grid .h {
-  padding: var(--s-2) 10px; font-size: var(--t-2xs); font-weight: 600; letter-spacing: .07em;
-  text-transform: uppercase; color: var(--fg-subtle);
-  background: var(--surface-2);
-  border-bottom: 1px solid var(--border); white-space: nowrap;
-}
-.thr-grid .c { padding: 7px 10px; border-bottom: 1px solid var(--border); min-width: 0; }
-.thr-grid .c .input { padding: 4px 7px; font-size: var(--t-sm); }
-.thr-slug { font-family: var(--font-mono); font-size: var(--t-sm); }
-.thr-saved { animation: saved 1.6s var(--ease); }
-@keyframes saved {
-  0%, 60% { background: color-mix(in srgb, var(--absent-solid) 14%, transparent); }
-  100% { background: transparent; }
-}
-
-@media (max-width: 900px) {
-  .thr-grid { grid-template-columns: minmax(0, 1fr); }
-  .thr-grid .h { display: none; }
-  .thr-grid > form {
-    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: var(--s-2); padding: var(--s-3) 10px; border-bottom: 1px solid var(--border);
-  }
-  .thr-grid .c { border: 0; padding: 0; }
-  .thr-grid .c-slug, .thr-grid .c-preview, .thr-grid .c-status { grid-column: 1 / -1; }
 }
 
 .auth-shell {

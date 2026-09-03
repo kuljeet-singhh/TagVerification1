@@ -14,10 +14,10 @@ import { announce, toast } from "./app.js";
 
 /* ---------------------------------------------------------- image intake */
 
-/* SigLIP consumes 224x224 tiles and we score the full image plus 9 half-size
- * crops, so RESIZING beyond this discards detail the model was going to throw
- * away anyway, and takes a 4K creative from ~8MB to ~150KB. The server does the
- * same thing for API callers who skip it.
+/* 768px on the longest edge is what the model is shown, so RESIZING beyond this
+ * discards detail it was going to throw away anyway, and takes a 4K creative from
+ * ~8MB to ~150KB. The server does the same thing for API callers who skip it, and
+ * intake.py holds the same number -- keep the two in step.
  *
  * The RE-ENCODE that used to come with it is a different matter, and it did not
  * cost zero accuracy — see the pass-through in downscale() below. */

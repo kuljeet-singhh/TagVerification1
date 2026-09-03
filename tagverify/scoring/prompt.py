@@ -4,10 +4,12 @@ The question we ask a vision language model, and the shape its answer must take.
 THIS FILE IS THE PRODUCT
 ------------------------
 Under SigLIP the accuracy of a tag lived in its phrase pack -- eleven-plus hand-tuned strings
-per tag, calibrated against labelled images. Under a VLM it lives here and in each tag's
-one-line description. That makes this module the single artefact the whole accuracy claim
-rests on, which is why it is version-controlled, fingerprinted into `decision_version`, and
-changed deliberately rather than tuned in place.
+per tag, calibrated against labelled images. It now lives here and in each tag's NAME: the
+instruction below carries everything about how to decide, and the catalog supplies only which
+categories to decide. That makes this module the single artefact the whole accuracy claim
+rests on -- more so than before, since a tag contributes two or three words to it -- which is
+why it is version-controlled, fingerprinted into `decision_version`, and changed deliberately
+rather than tuned in place.
 
 WHY A SCHEMA AND NOT PROSE
 --------------------------
@@ -41,6 +43,7 @@ offending frame. That is the case the eval set has to keep honest.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -100,8 +103,8 @@ containers or bar setting visible". Never put reasoning, caveats or instructions
 
 #: The response schema. `additionalProperties: false` and an exhaustive `required` list on
 #: every object, so a reply that drifts is a validation error at the boundary rather than a
-#: KeyError deep in the pipeline -- the same discipline `scoring/client.py`'s pydantic models
-#: apply to the Space's replies.
+#: KeyError deep in the pipeline. A model's reply is untrusted input like any other, and this
+#: is where that is enforced.
 SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -153,15 +156,36 @@ SCHEMA_VERSION = hashlib.sha256(
 ).hexdigest()[:12]
 
 
+def catalog_specs(rows: Iterable[Any]) -> dict[str, str]:
+    """
+    slug -> the text the model is given for that category. THE TAG'S NAME.
+
+    ONE PLACE, because there were three: gemini.health, vlm.health and fake.health each built
+    this map themselves, identically, which meant changing what the model is asked meant
+    changing it in three files and hoping. A scorer that asks a different question from its
+    own `packs_version` is not a bug anyone would catch quickly.
+
+    IT IS THE LABEL, NOT THE DESCRIPTION. That is the whole of this change. The description
+    used to be the prompt; it is now what a screen owner reads in DOOH's blocked-categories
+    picker and nothing more. What the model is told to look for is the name the tag was given
+    -- "Alcoholic content", "Revealing or suggestive clothing" -- so a tag is only as good as
+    its name, and renaming one is what moves its behaviour.
+
+    NO FILTER, and that is a fix rather than an omission. The three copies each skipped rows
+    whose description was blank, so a tag saved without one vanished from the catalog and was
+    never scored, silently, with no message anywhere. `label` is required by validate_tag, so
+    keyed on it every active tag is always in the question.
+    """
+    return {row.slug: (row.label or "").strip() for row in rows}
+
+
 def render_categories(specs: dict[str, str]) -> str:
     """
     The category list, as the model sees it.
 
-    `specs` is slug -> the sentence describing what to look for. Today that is the tag's
-    `description`, which is also what a screen owner reads in the blocked-tags picker; a
-    dedicated `detection_spec` column separates the two later (see the plan's 4.15). Either
-    way, THAT SENTENCE IS THE PROMPT -- it is the whole of what replaces eighteen phrases and
-    a calibration run.
+    `specs` is slug -> the text for that category, built by `catalog_specs` above. The slug
+    stays in the line because the schema requires the model to echo it back; the text beside
+    it is what it actually reads.
 
     Sorted by slug so the rendered text -- and therefore the catalog fingerprint -- does not
     move just because a dict happened to be built in a different order.
@@ -195,14 +219,18 @@ def catalog_fingerprint(model: str, specs: dict[str, str]) -> str:
     Under SigLIP this hashed the prompt pack's bytes and was stamped inside the Space by
     `inference/versioning.py`, then relayed out by `analyze/run.py`. Nothing travels any more,
     so it is computed here -- but it keeps its exact meaning and its exact job. It is half of
-    the cache key on `creative_tag_analyses` (ours and dooh-backend's), so editing a tag's
-    description invalidates verdicts decided against the old wording instead of silently
-    keeping them.
+    the cache key on `creative_tag_analyses` (ours and dooh-backend's), so RENAMING a tag
+    invalidates verdicts decided under its old name instead of silently keeping them.
 
     Covers the model id, this module (prompt text and schema, via PROMPT_VERSION) and every
-    active tag's slug and spec. It deliberately does NOT cover the decision rule or the
-    thresholds -- that is `decision_version`, and folding the two together makes each one's
-    meaning unreadable. See tagverify/tags/decide.py.
+    active tag's slug and spec -- the spec being the tag's name, see `catalog_specs`. Editing a
+    tag's DESCRIPTION no longer moves it, and that is correct: the description is not part of
+    the question any more, so a verdict decided before an edit is still a verdict decided under
+    the same question.
+
+    It deliberately does NOT cover the decision rule or the thresholds -- that is
+    `decision_version`, and folding the two together makes each one's meaning unreadable. See
+    tagverify/tags/decide.py.
     """
     digest = hashlib.sha256(f"{model}|{PROMPT_VERSION}".encode())
     for slug in sorted(specs):

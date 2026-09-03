@@ -3,7 +3,7 @@ The `dooh` CLI.
 
     dooh create-key "Client name"     # issue an API key
     dooh health                       # the /api/v1/health report, without a server
-    dooh gate                         # SigLIP vs VLM over the labelled eval set
+    dooh gate                         # score the eval set, against the banked baseline
     dooh prune-usage                  # drop expired rate-limit rows
 
 Five commands are gone with the ranking model: seed-tags, seed-thresholds, export-packs,
@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 
 import typer
 
@@ -26,20 +25,6 @@ from tagverify.db.usage import prune_usage_counters
 
 app = typer.Typer(add_completion=False, help="DOOH Tag Verification operations.")
 
-# Resolved from the installed `inference` package, not from the process working directory.
-# These were literal Path("inference/...") strings, which meant the `dooh` console script only
-# worked when invoked from the repo root and failed with a bare "file not found" anywhere
-# else. Note the Dockerfile copies only banding.py and versioning.py out of the model tier, so
-_INFERENCE_DIR = Path(__file__).resolve().parent.parent / "inference"
-
-CALIBRATION = _INFERENCE_DIR / "calibration.json"
-
-
-#: The scoring code, whose bytes are part of the fingerprint alongside the prompts.
-DETECTOR = _INFERENCE_DIR / "detector.py"
-
-
-# --------------------------------------------------------------------- seed
 
 
 @app.command("create-key")
@@ -84,9 +69,6 @@ def create_key(
     asyncio.run(run())
 
 
-# ------------------------------------------------------------- calibration
-
-
 @app.command("prune-usage")
 def prune_usage() -> None:
     """Delete rate-limit counter rows older than a day."""
@@ -107,16 +89,9 @@ def health() -> None:
     asyncio.run(run())
 
 
-if __name__ == "__main__":
-    app()
-
-
-# ---------------------------------------------------------------------- tags
-
-
 @app.command()
 def gate(
-    arm: str = typer.Option("both", help="siglip | vlm | both"),
+    arm: str = typer.Option("both", help="vlm | siglip (report-only) | both"),
     limit: int | None = typer.Option(None, help="score only the first N images (smoke run)"),
     report_only: bool = typer.Option(False, "--report", help="print from cache, score nothing"),
     disagreements: bool = typer.Option(
@@ -126,10 +101,14 @@ def gate(
     """
     Does the VLM beat SigLIP on the labelled eval set? See tagverify/eval_gate.py.
 
-    Gates on CROSS-TAG FALSE BLOCKS, not per-tag precision — the latter is what
-    calibrate.py optimises, and applying its output took false blocks from 152 to 211
-    while mean recall fell. Mean recall is the second axis, so an improvement bought by
+    Gates on CROSS-TAG FALSE BLOCKS, not per-tag precision. Optimising the latter is what
+    the retired calibration sweep did, and applying its output took false blocks from 152 to
+    211 while mean recall FELL. Mean recall is the second axis, so an improvement bought by
     wrecking the other one is reported as MIXED rather than PASS.
+
+    Only the live SCORER can be scored. 'siglip' is reported from inference/gate_cache.json
+    and never re-scored — those 466 rows are the banked baseline, and there is no ranking
+    model left to reproduce them with.
 
     Resumable: re-running skips what is already in inference/gate_cache.json.
     """
@@ -156,15 +135,20 @@ def gate(
         reports: dict[str, dict] = {}
 
         for which in arms:
-            if not report_only:
-                if which != settings().scorer:
-                    typer.secho(
-                        f"  skipping '{which}': SCORER is '{settings().scorer}'. Re-run with\n"
-                        f"  SCORER={which} to score that arm — the gate scores through the\n"
-                        f"  production path, so it cannot switch scorers mid-process.",
-                        fg=typer.colors.YELLOW,
-                    )
-                    continue
+            # An arm that cannot be SCORED can still be REPORTED, and the siglip arm is
+            # exactly that: it is never the live SCORER again, so its 466 rows in the cache
+            # are the banked baseline and reading them back is the whole point of keeping
+            # them. `continue` used to sit here and skipped the report too, which is how a
+            # plain `dooh gate` ended up with an empty `reports` -- see the write below.
+            if not report_only and which != settings().scorer:
+                typer.secho(
+                    f"  not scoring '{which}': SCORER is '{settings().scorer}'. Re-run with\n"
+                    f"  SCORER={which} to score that arm — the gate scores through the\n"
+                    f"  production path, so it cannot switch scorers mid-process.\n"
+                    f"  Reporting '{which}' from the cache instead.",
+                    fg=typer.colors.YELLOW,
+                )
+            elif not report_only:
                 typer.echo(f"\n{len(images)} images x {len(slugs)} tags — arm '{which}'")
                 await gate_mod.score_arm(which, images, cache)
                 gate_mod.CACHE.write_text(_json.dumps(cache))
@@ -195,7 +179,29 @@ def gate(
         if "siglip" in reports and "vlm" in reports:
             typer.echo("\n" + gate_mod.compare(reports["siglip"], reports["vlm"]))
 
-        gate_mod.OUT.write_text(_json.dumps(reports, indent=2))
-        typer.echo(f"\nwritten to {gate_mod.OUT}")
+        # MERGE, never replace, and never write an empty report at all.
+        #
+        # This was an unconditional `write_text(dumps(reports))`. An arm that produced no
+        # rows left `reports` empty, so the file holding the banked SigLIP baseline -- 466
+        # images, 146 cross-tag false blocks, 0.688 mean recall, the only thing any future
+        # scoring change can be judged against -- was truncated to `{}` by a run that had
+        # measured nothing. Merging also means scoring one arm today cannot drop the other
+        # arm's numbers from the file.
+        if not reports:
+            typer.secho(
+                f"\n  nothing measured — leaving {gate_mod.OUT} as it is.",
+                fg=typer.colors.YELLOW,
+            )
+            return
+
+        existing = (
+            _json.loads(gate_mod.OUT.read_text()) if gate_mod.OUT.exists() else {}
+        )
+        gate_mod.OUT.write_text(_json.dumps({**existing, **reports}, indent=2))
+        typer.echo(f"\nwritten to {gate_mod.OUT} ({', '.join(sorted(reports))})")
 
     asyncio.run(run())
+
+
+if __name__ == "__main__":
+    app()

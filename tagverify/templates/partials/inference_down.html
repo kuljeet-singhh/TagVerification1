@@ -1,40 +1,36 @@
 {% import "_icons.html" as ico %}
-{# The warming state polls itself back to health rather than telling the user to
-   reload. A free Space sleeps after 48h idle and takes 30-60s to load ~400MB of
-   weights — a known, self-resolving condition, so asking a human to sit there
-   pressing refresh was making them do the computer's job. #}
+{# The catalog could not be read, so there is nothing to offer as tags.
 
-<div id="catalog-status" class="callout callout-warn stack gap-3"
-     {% if warming %}
-     hx-get="/ui/catalog"
-     hx-trigger="load delay:8s, every 8s"
-     hx-target="#results"
-     hx-swap="innerHTML"
-     {% endif %}>
+   THERE IS NO WARMING STATE ANY MORE, and removing it is the point rather than an
+   omission. This panel used to have a second branch that polled itself back to health
+   every 8 seconds, because a free Hugging Face Space slept after 48h idle and took
+   30-60s to reload ~400MB of weights. Nothing is loaded at startup now -- the prompt is
+   read per request -- so there is no cold state to wait out: `warming` was hardcoded
+   False at web/playground.py:88 and the whole branch had been unreachable since.
+
+   A dead branch in a template is worse than one in Python, because nothing type-checks
+   it and nobody renders it, so it rots silently and then gets copied.
+
+   What reaches here now is a real failure: the catalog read raised. That is a database
+   problem or an unconfigured scorer, and neither is self-resolving, so the button is a
+   manual retry rather than a poll. #}
+
+<div id="catalog-status" class="callout callout-warn stack gap-3">
   <div class="row gap-2">
     {{ ico.icon('refresh', 16) }}
-    <strong>
-      {% if warming %}The inference service is waking up{% else %}
-      Cannot reach the inference service{% endif %}
-    </strong>
+    <strong>Cannot read the tag catalog</strong>
   </div>
 
-  <p class="small">
-    {% if warming %}
-      It sleeps after 48 hours idle and takes 30&ndash;60 seconds to load the model.
-      This page is checking every 8 seconds and will fill in on its own.
-    {% else %}
-      {{ error }}
-    {% endif %}
-  </p>
+  <p class="small">{{ error }}</p>
 
-  {% if local_hint %}
-    <p class="xs">
-      Running locally? Start the model with
-      <code class="mono">cd inference &amp;&amp; ./.venv/bin/python app.py</code>
-      and set <code class="mono">INFERENCE_URL=http://127.0.0.1:7860</code>.
-    </p>
-  {% endif %}
+  {# The catalog comes from Postgres, and the scorer is only asked to answer about it, so
+     the two ways this fails are worth naming: check DATABASE_URL first, then whether the
+     active scorer has its API key. `dooh health` reports both without a server. #}
+  <p class="xs">
+    Check <code class="mono">DATABASE_URL</code>, then that the scorer named by
+    <code class="mono">SCORER</code> has its provider key set.
+    <code class="mono">dooh health</code> reports both.
+  </p>
 
   <div>
     <button class="btn btn-outline btn-sm"

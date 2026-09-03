@@ -1,27 +1,27 @@
 """
 The gate: does the VLM actually beat SigLIP on this repo's labelled images?
 
-    dooh gate --arm siglip          # the baseline, through the production path
+    dooh gate --arm siglip          # print the banked baseline (never re-scored)
     dooh gate --arm vlm             # whatever SCORER/VLM_PROVIDER say
     dooh gate --limit 20            # a cheap smoke run first
     dooh gate --report              # print the comparison, score nothing new
 
-WHY THIS FILE IS NOT inference/sweep.py
----------------------------------------
-`sweep.py` answers the same question for SigLIP and its method is copied here
-deliberately (see `cross_fire` and `recall` below -- if the definitions drift, the
-152 / 0.665 baseline stops being a baseline). But it lives in the directory that is
-git-subtree-pushed to a Space, so it must never touch Postgres, and a VLM arm needs
-exactly that: the catalog IS the prompt now. So the gate lives in the web tier and
-calls both scorers the way production calls them.
+WHY THIS FILE IS IN THE WEB TIER
+--------------------------------
+The metric definitions below (`cross_fire`, `recall_of`) are copied verbatim from the
+retired SigLIP sweep, deliberately: if they drift, the 152 / 0.665 baseline stops being
+a baseline. But that script lived beside the model, where it could not touch Postgres --
+and the catalog IS the prompt now, so scoring anything requires the database. Hence here,
+calling the scorer exactly the way production calls it.
 
-That is also why the SigLIP arm goes through `scoring/client.py` rather than
-importing `detector` directly: it measures what production actually serves, not what
-a script can reproduce.
+The SigLIP arm can no longer be scored at all -- the ranking model, its Space and its client
+are gone -- so it is REPORTED from the 466 rows banked in gate_cache.json and never re-run.
+Those rows were produced through the production path of the day, which is what makes them a
+fair baseline rather than something a script reproduced.
 
 THE METRIC, AND WHY IT IS THIS ONE
 ----------------------------------
-NOT per-tag precision/recall. That is the metric `inference/calibrate.py` optimises,
+NOT per-tag precision/recall. That is what the retired calibration sweep optimised, and
 it optimises each tag against that tag's own 24 images -- a set containing no
 examples of the other nineteen categories -- and applying its output raised cross-tag
 false blocks from 152 to 211 while mean recall FELL. A metric that cannot see its own
@@ -34,7 +34,7 @@ So the gate is:
      tag would refuse, described by a category it does not belong to. Baseline: 152.
 
   2. MEAN RECALL, second. An uncertain positive is NOT a detection -- it is a request
-     for a human -- so it counts against recall exactly as sweep.py counts it.
+     for a human -- so it counts against recall exactly as the old sweep counted it.
      Baseline: 0.665.
 
 A LABEL AUDIT FALLS OUT OF IT, AND IS NEEDED
@@ -98,16 +98,17 @@ class Scored:
     label: bool
     #: slug -> "present" | "uncertain" | "absent"
     bands: dict[str, str] = field(default_factory=dict)
-    #: slug -> what the model said it saw. Empty for SigLIP, which reports a canned
-    #: phrase rather than an observation; it is what makes the label audit possible.
+    #: slug -> what the model said it saw. Empty in the banked SigLIP rows, which carry a
+    #: canned phrase rather than an observation; the observation is what makes --disagreements
+    #: possible, and is the one thing the baseline cannot offer.
     evidence: dict[str, str] = field(default_factory=dict)
     latency_ms: int = 0
 
 
 def discover(limit: int | None = None) -> list[tuple[str, bool, Path]]:
-    """Every eval/<slug>/{pos,neg}/* image, as (owner, label, path). Same as sweep.py."""
+    """Every eval/<slug>/{pos,neg}/* image, as (owner, label, path)."""
     if not EVAL_DIR.is_dir():
-        raise SystemExit(f"no {EVAL_DIR}/ — run inference/fetch_demo_eval.py first")
+        raise SystemExit(f"no {EVAL_DIR}/ — the labelled eval set is gitignored, not checked in")
 
     found: list[tuple[str, bool, Path]] = []
     for tag_dir in sorted(EVAL_DIR.iterdir()):
@@ -134,7 +135,7 @@ async def _score_one(
 
     Deliberately `_score` + `decide_all` rather than `run_analysis`: the result cache
     would serve a stored verdict and the gate would measure the cache. Everything else
-    -- the scorer, the prompt, the banding, the tri-state -- is production's.
+    -- the scorer, the prompt, the decision rule, the tri-state -- is production's.
     """
     built = intake.build(path.read_bytes(), tags)
     health = await _scorer_health(session)
@@ -143,11 +144,15 @@ async def _score_one(
     for attempt in range(RETRIES):
         try:
             started = time.monotonic()
-            raw = await _score(built, health)
+            # deadline_s is explicit and REQUIRED by _score. Omitting it raised a TypeError
+            # that the broad `except` below swallowed as a per-image skip, so a whole arm
+            # scored zero images and said "skip … TypeError" 473 times instead of failing.
+            # None means the scorer's own API default, which is what a batch run wants.
+            raw = await _score(built, health, None)
             latency = int((time.monotonic() - started) * 1000)
             break
         except InferenceWarming:
-            # Expected against a busy hosted model, and against a cold Space. Backing
+            # Expected against a busy hosted model or a rate-limited quota. Backing
             # off is the whole point of that exception existing.
             await asyncio.sleep(3 * (attempt + 1))
         except Exception as exc:  # noqa: BLE001

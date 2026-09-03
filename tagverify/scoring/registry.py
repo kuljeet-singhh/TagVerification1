@@ -8,8 +8,7 @@ path. For a compliance tool, monitoring that describes the wrong dependency is w
 monitoring, because it is believed.
 
 Imports are inside the functions on purpose: a checkout that has never configured a VLM must
-not pay for importing its SDK, and `tagverify/scoring/vlm.py` imports from `client.py`, so
-resolving at module scope would make the import graph care about the order of these files.
+not pay for importing the anthropic or google-genai SDK just to resolve this module.
 """
 
 from __future__ import annotations
@@ -38,9 +37,9 @@ def module() -> Any:
     """
     The module doing the scoring: it exposes `health(session)` and `score_frames(intake, h)`.
 
-    Returns None for SigLIP, whose two halves live in `scoring/client.py` and in `run.py`'s
-    `_score_frames` and are deliberately left alone — the point of this whole change is to be
-    able to compare against an untouched baseline.
+    Returns None for an unrecognised SCORER — see KNOWN above. That used to mean "SigLIP",
+    whose halves lived in a `scoring/client.py` this package no longer has; it now means only
+    that the value is not one this build can serve, and `run.py::_score` raises on it.
     """
     match name():
         case "vlm":

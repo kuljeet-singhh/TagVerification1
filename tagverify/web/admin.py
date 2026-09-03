@@ -1,5 +1,5 @@
 """
-/admin — issue keys, revoke keys, edit the tag catalog, edit thresholds.
+/admin — issue keys, revoke keys, edit the tag catalog.
 
 AUTHORISATION LIVES ON EVERY HANDLER, NOT ON THE PAGE
 -----------------------------------------------------
@@ -22,12 +22,10 @@ from tagverify.auth import admin as auth
 from tagverify.auth.deps import TAGS_WRITE, client_ip
 from tagverify.auth.keys import create_api_key, revoke_api_key
 from tagverify.config import settings
-from tagverify.db.models import ApiKey, ContentTag, TagThreshold
+from tagverify.db.models import ApiKey, ContentTag
 from tagverify.db.session import get_session
-from tagverify.db.thresholds import upsert_threshold
 from tagverify.scoring import registry
 from tagverify.tags import catalog
-from tagverify.tags.decide import invalidate_threshold_cache
 from tagverify.templating import render
 
 log = logging.getLogger(__name__)
@@ -51,9 +49,6 @@ async def _load(session: AsyncSession) -> dict[str, Any]:
     keys = (
         (await session.execute(select(ApiKey).order_by(ApiKey.created_at.desc()))).scalars().all()
     )
-    thresholds = (
-        (await session.execute(select(TagThreshold).order_by(TagThreshold.slug))).scalars().all()
-    )
     content_tags = (
         (await session.execute(select(ContentTag).order_by(ContentTag.sort_order, ContentTag.slug)))
         .scalars()
@@ -61,13 +56,10 @@ async def _load(session: AsyncSession) -> dict[str, Any]:
     )
     context = {
         "keys": list(keys),
-        "thresholds": list(thresholds),
         "content_tags": list(content_tags),
-        # The form's SHAPE depends on this, so the form has to say what it is. Without it the
-        # phrase fields appear and disappear according to an environment variable set on the
-        # server, and someone looking at the page has no way to tell why — which reads as a
-        # bug in the form rather than as the mode it is in.
-        "scorer_name": registry.name(),
+        # Which model is answering. The form's SHAPE no longer depends on it — a tag is a
+        # name and a sentence whoever reads them — but the page still names the reader,
+        # because "why did it say that?" is answered differently by different models.
         "scorer_label": registry.describe(),
         "scorer_model": registry.model_label(),
         # A half-configuration (SCORER=vlm with no API key) drops the phrase requirement while
@@ -96,7 +88,7 @@ async def _inference_context() -> dict[str, Any]:
 
 # The template hides every panel whose name is not the selected tab, so an unrecognised
 # ?tab= would render an empty page rather than falling through to the keys panel.
-ADMIN_TABS = ("keys", "thresholds", "tags")
+ADMIN_TABS = ("keys", "tags")
 
 
 @router.get("/admin", response_class=HTMLResponse)
@@ -211,54 +203,7 @@ async def revoke_key(
     return render(request, "partials/keys_panel.html", await _load(session))
 
 
-# -------------------------------------------------------------- thresholds
-
-
-@router.post("/admin/thresholds/{slug}", response_class=HTMLResponse)
-async def save_threshold(
-    request: Request,
-    slug: str,
-    low: float = Form(...),
-    high: float = Form(...),
-    floor: float = Form(...),
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
-    require_admin(request)
-
-    async def row_response(error: str | None = None, saved: bool = False) -> HTMLResponse:
-        row = (
-            await session.execute(select(TagThreshold).where(TagThreshold.slug == slug))
-        ).scalar_one_or_none()
-        return render(
-            request,
-            "partials/threshold_row.html",
-            {"row": row, "row_error": error, "saved_slug": slug if saved else None},
-        )
-
-    for label, value in (("low", low), ("high", high), ("floor", floor)):
-        if not 0 <= value <= 1:
-            return await row_response(f"{label} must be between 0 and 1.")
-
-    # An inverted band would make a score satisfy both "absent" and "present", leaving the
-    # ORDER of the checks in banding.py to silently decide the verdict.
-    if low > high:
-        return await row_response("low must not be greater than high.")
-
-    await upsert_threshold(session, slug, low=low, high=high, floor=floor)
-
-    # Clear the 30s memo so the edit lands on the very next request rather than up to half a
-    # minute later — the person who made the change should see it immediately. This stays in
-    # the handler on purpose: the memo is process state, not database state.
-    invalidate_threshold_cache()
-    return await row_response(saved=True)
-
-
 # ----------------------------------------------------------------------- tags
-
-
-def _phrases(raw: str) -> list[str]:
-    """One phrase per line. A textarea is the right control here — these are sentences."""
-    return [line.strip() for line in raw.splitlines() if line.strip()]
 
 
 @router.post("/admin/tags", response_class=HTMLResponse)
@@ -267,45 +212,44 @@ async def create_content_tag(
     slug: str = Form(""),
     label: str = Form(""),
     description: str = Form(""),
-    positives: str = Form(""),
-    negatives: str = Form(""),
-    rationale: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     require_admin(request)
 
     async def panel(**extra: Any) -> HTMLResponse:
-        return render(request, "partials/tags_panel.html", (await _load(session)) | extra)
+        # slug_preview so a re-rendered form shows the same identifier the author was looking
+        # at when they pressed the button, rather than resetting to a dash beside a filled name.
+        context = await _load(session)
+        return render(
+            request,
+            "partials/tags_panel.html",
+            context | {"slug_preview": catalog.slugify(label)} | extra,
+        )
 
-    # The RAW strings, not _phrases() output. Re-joining a parsed list would drop the author's
-    # blank lines and reformat their text underneath them while they are still editing it.
-    submitted = {
-        "slug": slug,
-        "label": label,
-        "description": description,
-        "positives": positives,
-        "negatives": negatives,
-        "rationale": rationale,
-    }
+    # The RAW strings, exactly as typed. A re-render must not reformat someone's text
+    # underneath them while they are still editing it.
+    submitted = {"slug": slug, "label": label, "description": description}
 
     try:
         valid = await catalog.create_tag(
             session,
-            slug=slug,
+            # Blank means DERIVE, and blank is the normal case: the form shows the identifier
+            # rather than asking for it, and only sends one when someone opened the override.
+            # No extra state to carry -- an empty string is the whole signal.
+            slug=slug.strip() or catalog.slug_from_label(label),
             label=label,
             description=description,
-            positives=_phrases(positives),
-            negatives=_phrases(negatives),
-            rationale=rationale,
         )
     except catalog.TagValidationError as exc:
         # 200 with the panel re-rendered, never a 4xx: HTMX drops those, and the author would
         # watch a full form do nothing.
         #
-        # And the form comes back POPULATED. A good tag carries 8+ positives and 10+ negatives,
-        # hand-written and deliberately mirrored against each other; making someone retype all
-        # of that because they were four phrases short is how you get four lazy phrases, which
-        # is the outcome this validation exists to prevent. The edit form already did this.
+        # And the form comes back POPULATED, override included. The description is the prompt
+        # and is the part worth labouring over; making someone retype a considered sentence
+        # because the name collided is how you get a careless one, which is the outcome this
+        # validation exists to prevent. An identifier that survived a rejection has been seen
+        # and possibly corrected by hand, so the template reopens the override rather than
+        # burying it at the moment it matters most.
         await session.rollback()
         return await panel(tag_error=exc.message, form=submitted)
 
@@ -315,6 +259,28 @@ async def create_content_tag(
     # are heuristics, and refusing on a heuristic would be worse than advising on one — but
     # they name the specific thing most likely to make this tag misfire.
     return await panel(tag_warnings=valid.warnings, saved_tag=valid.slug)
+
+
+@router.get("/admin/tags/slug-preview", response_class=HTMLResponse)
+async def slug_preview(request: Request, label: str = "") -> HTMLResponse:
+    """
+    The identifier a name would produce, rendered as you type.
+
+    SERVER-SIDE ON PURPOSE, for one round trip per keystroke-burst. Deriving it in JavaScript
+    would be a third copy of `catalog.slugify` -- the two it replaces were both JS -- and a
+    preview that disagrees with what the save actually writes is worse than showing nothing.
+    The slug is permanent and cannot be changed after creation, so the preview is the only
+    moment anyone gets to notice it is wrong.
+
+    A GET, so no CSRF token: it reads nothing and writes nothing. Still admin-gated, because
+    the whole panel is.
+    """
+    require_admin(request)
+    return render(
+        request,
+        "partials/slug_preview.html",
+        {"slug": catalog.slugify(label), "label": label},
+    )
 
 
 @router.post("/admin/tags/{slug}/retire", response_class=HTMLResponse)
@@ -335,16 +301,39 @@ async def retire_content_tag(
     return render(request, "partials/tags_panel.html", await _load(session))
 
 
+@router.post("/admin/tags/{slug}/restore", response_class=HTMLResponse)
+async def restore_content_tag(
+    request: Request,
+    slug: str,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """
+    Put a retired tag back. The mirror of `retire_content_tag`, down to the failure handling.
+
+    ADMIN ONLY, deliberately: `api/v1/tags.py` gets no matching endpoint. Its DELETE is
+    documented to dooh-backend as a retire, and adding a public un-retire is a contract change
+    that service would need to know about first.
+    """
+    require_admin(request)
+    try:
+        await catalog.restore_tag(session, slug)
+        await session.commit()
+    except catalog.TagValidationError as exc:
+        await session.rollback()
+        return render(
+            request, "partials/tags_panel.html", (await _load(session)) | {"tag_error": exc.message}
+        )
+    return render(request, "partials/tags_panel.html", await _load(session))
+
+
 async def _tag_row(
     request: Request, session: AsyncSession, slug: str, **extra: Any
 ) -> HTMLResponse:
     row = await catalog.get_tag(session, slug)
-    # live_slugs must travel with the row. Without it the template cannot tell "not live" from
-    # "we do not know", and a row swapped back after an edit would claim every tag is stale.
     return render(
         request,
         "partials/tag_row.html",
-        {"row": row, "scorer_name": registry.name()} | await _inference_context() | extra,
+        {"row": row} | await _inference_context() | extra,
     )
 
 
@@ -379,15 +368,17 @@ async def save_content_tag(
     slug: str,
     label: str = Form(""),
     description: str = Form(""),
-    positives: str = Form(""),
-    negatives: str = Form(""),
-    rationale: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """
-    Rewriting the negatives is the accuracy loop — it is the whole reason edit exists rather
+    Rewriting the DESCRIPTION is the accuracy loop — it is the whole reason edit exists rather
     than delete-and-recreate, which would strand the slug's labelled eval images and its
-    measured thresholds.
+    measured thresholds. It used to be rewriting the hard negatives; those went with migration
+    0003, and the sentence took over the job.
+
+    An edit here moves `packs_version`, because the description is half of what
+    `catalog_fingerprint` hashes. That is correct and is the point: verdicts decided against
+    the old wording should not be served under the new one.
     """
     require_admin(request)
 
@@ -405,14 +396,11 @@ async def save_content_tag(
             slug=slug,
             label=label,
             description=description,
-            positives=_phrases(positives),
-            negatives=_phrases(negatives),
-            rationale=rationale,
         )
     except catalog.TagValidationError as exc:
         await session.rollback()
         # Back into the EDIT form, not the display row: the author's text has to survive a
-        # rejection, or a long prompt list is retyped from memory.
+        # rejection rather than being retyped from memory.
         return render(
             request,
             "partials/tag_edit_row.html",

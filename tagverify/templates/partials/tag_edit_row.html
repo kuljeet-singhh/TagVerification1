@@ -1,10 +1,10 @@
 {# The row, swapped for an editable form in place.
 
    A <tr> cannot hold a <form> spanning its cells, so the edit state is a single full-width
-   cell instead of the display row's six. That is also why this is its own partial rather
+   cell instead of the display row's four. That is also why this is its own partial rather
    than a branch inside tag_row.html: the two have genuinely different shapes. #}
 <tr id="tag-{{ row.slug }}" class="tag-editing">
-  <td colspan="6">
+  <td colspan="4">
     <form class="stack gap-3"
           hx-post="/admin/tags/{{ row.slug }}"
           hx-target="#tag-{{ row.slug }}"
@@ -12,9 +12,14 @@
           hx-disabled-elt="find button">
 
       <div class="row gap-3 wrap-row" style="align-items:flex-end">
+        {# Disabled, not absent: it is the join key for this tag's eval folder and the value
+           DOOH stores in devices.blocked_tags, so hiding it would hide the thing someone came
+           to look up. Set once at creation and NOT re-derived when the name changes -- worth
+           saying out loud now that the name is where it came from. #}
         <div class="field" style="width:200px">
-          <label>Slug</label>
-          <input class="input mono" value="{{ row.slug }}" disabled>
+          <label for="edit-slug-{{ row.slug }}">Identifier</label>
+          <input class="input mono" id="edit-slug-{{ row.slug }}" value="{{ row.slug }}"
+                 disabled title="Set when the tag was created. Renaming does not change it.">
         </div>
         <div class="field" style="flex:1;min-width:200px">
           <label for="edit-label-{{ row.slug }}">Label</label>
@@ -27,25 +32,6 @@
         <label for="edit-desc-{{ row.slug }}">Description</label>
         <input class="input" id="edit-desc-{{ row.slug }}" name="description" required
                maxlength="200" value="{{ row.description }}">
-      </div>
-
-      <div class="row gap-3 wrap-row">
-        <div class="field" style="flex:1;min-width:260px">
-          <label for="edit-pos-{{ row.slug }}">Positives</label>
-          <textarea class="input" id="edit-pos-{{ row.slug }}" name="positives" rows="8"
-                    required>{{ row.positives | join('\n') }}</textarea>
-        </div>
-        <div class="field" style="flex:1;min-width:260px">
-          <label for="edit-neg-{{ row.slug }}">Negatives &mdash; where the accuracy is</label>
-          <textarea class="input" id="edit-neg-{{ row.slug }}" name="negatives" rows="8"
-                    required>{{ row.negatives | join('\n') }}</textarea>
-        </div>
-      </div>
-
-      <div class="field">
-        <label for="edit-why-{{ row.slug }}">Why these negatives</label>
-        <textarea class="input" id="edit-why-{{ row.slug }}" name="rationale" rows="3"
-                  >{{ row.rationale or '' }}</textarea>
       </div>
 
       {% if row_error %}
@@ -69,7 +55,7 @@
                 hx-get="/admin/tags/{{ row.slug }}/row"
                 hx-target="#tag-{{ row.slug }}" hx-swap="outerHTML">Cancel</button>
         <span class="xs subtle push">
-          Takes effect after <code class="mono">dooh export-packs --push</code>.
+          Live as soon as it saves. Rewording re-scores from the next upload.
         </span>
       </div>
     </form>

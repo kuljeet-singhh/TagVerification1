@@ -5,9 +5,9 @@ Twenty ungrouped pills in a scrolling box is the worst part of the old UI: nothi
 distinguishes `pharma_medicine` from `protein_supplements` at a glance, and the tags whose
 verdicts carry a regulatory consequence sit interleaved with the ones that do not.
 
-The grouping is presentation only — it never reaches the API, and a tag that appears in
-packs.json but not here still shows up (in "Other"), so adding a tag to the pack never
-silently hides it from the UI.
+The grouping is presentation only — it never reaches the API, and a tag in the catalog but
+not in any group here still shows up (in "Other"), so adding a tag never silently hides it
+from the UI.
 """
 
 from __future__ import annotations

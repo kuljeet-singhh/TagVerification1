@@ -1,30 +1,31 @@
 # Deploying
 
-Three independently deployed pieces, plus the repo they come from:
+Three pieces, deployed independently:
 
 | what | where | how |
 |---|---|---|
 | the whole repo | GitHub — [`kuljeet-singhh/Dooh-TagVerefication`](https://github.com/kuljeet-singhh/Dooh-TagVerefication) | `git push origin main` |
-| `inference/` | Hugging Face Space (`sdk: gradio`) | `git subtree push` to the Space's remote |
-| `tagverify/` (the web app) | a container host that **stays running** — see §2 | `docker build` + `docker run` |
+| the web app | a host that **stays running** — see §1 | `pip install .` + `uvicorn` |
 | database | Neon Postgres | already provisioned |
 
-**This file gives you the commands.** Its operational counterpart,
-[`TAG_PIPELINE_IN_PRODUCTION.md`](./TAG_PIPELINE_IN_PRODUCTION.md), tells you what bites you once
-they have run — read it before a real deployment, not after. The two things in it that change how
-you deploy at all are §5 (a sleeping Space silently reverts the catalog and stops enforcing) and
-§8 (why serverless is structurally excluded). Both are summarised in place below.
+There used to be a fourth: a Hugging Face Space running a SigLIP 2 detector, pushed with `git
+subtree`, kept awake by a cron, and fed a phrase pack by a publish step. All of it is gone. The
+model reads its prompt from Postgres on every request, so there is no second tier to deploy, no
+pack to push, and **no publish step to forget**. That last one was this service's worst failure
+mode and it is now structurally impossible; §5 explains what it looked like, because it is worth
+knowing what the current shape buys you.
 
 ---
 
 ## ⚠️ Rotate two credentials first
 
-Both were exposed the same way — shared in a chat transcript — and neither has been rotated.
-
-1. **The Neon connection string** in `.env.local`. Reset it (Neon dashboard → Roles → reset
-   password) and update `DATABASE_URL` everywhere.
-2. **`RELOAD_SECRET`**, same file. Rotate it on **both sides at once** — this app and the Space —
-   or publishing stops working until they agree again.
+1. **The Neon connection string** in `.env.local`. It was exposed the same way — shared in a chat
+   transcript — and has **not** been rotated. Reset it (Neon dashboard → Roles → reset password)
+   and update `DATABASE_URL` everywhere.
+2. **The VLM provider API key.** This is the credential that costs money if it leaks: it bills
+   per request against a commercial tier, and nothing in this app caps spend. Issue a key
+   scoped to this deployment rather than reusing a personal one, and treat a leak as an
+   immediate rotation rather than a monitored one.
 
 Do both before this handles anything real.
 
@@ -32,240 +33,192 @@ Do both before this handles anything real.
 
 ## Region still matters, but far less than it used to
 
-The previous deployment used Neon's HTTP driver, where every query is a separate HTTPS
-request, so latency was `number of queries x round-trip time`. Measured against `us-east-2`
-from South Asia that was 562–2435 ms **per query**, and `/analyze` uncached took ~1800 ms.
+The first deployment used Neon's HTTP driver, where every query is a separate HTTPS request, so
+latency was `number of queries × round-trip time`. Measured against `us-east-2` from South Asia
+that was 562–2435 ms **per query**, and `/analyze` uncached took ~1800 ms.
 
-The Python app uses a pooled connection over the normal Postgres wire protocol, so a query is
-no longer a network event and the multiplier is gone. Cross-region still costs you one RTT on
-connection setup and adds latency to each round trip, so **keep the app in the same region as
-Neon** — but a mismatch is now a nuisance rather than the dominant cost.
+The Python app uses a pooled connection over the normal Postgres wire protocol, so a query is no
+longer a network event and the multiplier is gone. Cross-region still costs one RTT on connection
+setup and adds latency per round trip, so keep the app near Neon — but a mismatch is now a
+nuisance rather than the dominant cost.
 
-If the screens, the team and the traffic are in India, a Mumbai or Singapore Neon region will
-still beat Ohio for everyone. Regions cannot be changed in place: create a new project and
-re-run the schema plus `dooh seed-thresholds` and `dooh seed-tags`. Cheap to do now, while the
-only data is 23 threshold rows and the catalog they describe.
+**The model call has since become the dominant cost anyway.** An uncached `/analyze` waits on a
+provider round trip measured in seconds, against database queries measured in milliseconds. That
+does not make the database region free, but it does mean the first thing to measure when
+`/analyze` is slow is the provider, not Neon.
 
-`dooh-backend` calls this service **synchronously, inside a 7-second upload deadline**, so it
-wants to be close too. App, database and backend in one region.
+Regions cannot be changed in place: create a new project and re-run the schema. Cheap to do now,
+while the only data is the tag catalog and the keys.
+
+`dooh-backend` calls this service **synchronously** — an advertiser's upload waits on the
+verdict — so it wants to be close too. Its own timeouts are sized above this service's model
+timeouts on purpose, so the budget is generous; the latency a user feels is still the sum of
+every hop. App, database and backend in one region.
 
 ---
 
-## 1. The inference Space
-
-Unchanged by the Python rewrite — this half was always Python.
-
-```bash
-huggingface-cli login    # a WRITE token, to push; the app itself only ever reads
-huggingface-cli repo create dooh-tag-check --type space --space_sdk gradio --private
-```
-
-**Do not `git init` inside `inference/`.** It is tracked by the parent repo, and a nested
-`.git` makes the parent record it as a gitlink, so the directory would arrive on GitHub
-empty. `git subtree` does the same job from the repo root:
-
-```bash
-git remote add space https://huggingface.co/spaces/<you>/dooh-tag-check
-git subtree push --prefix=inference space main
-```
-
-`inference/README.md`'s front-matter (`sdk: gradio`, `app_file: app.py`) is what tells HF to
-install `requirements.txt` and run `app.py`, and `--prefix` puts it at the Space root where
-HF looks for it. **Do not delete that front-matter** — without it the Space will not build.
-
-First build takes a few minutes and downloads ~400MB of SigLIP 2 weights. Watch the Logs tab;
-it is ready when you see `[detector] ready: 23 tags`.
-
-Make the Space **private**. The app authenticates with an HF token, so nothing needs to be
-publicly reachable.
-
-Note that `banding.py` now ships to the Space alongside `app.py` and `detector.py` — it is the
-verdict rule, shared with the API tier. It imports nothing, so it adds no install cost.
-
-### Set `RELOAD_SECRET` on the Space
-
-Space → Settings → *Variables and secrets* → `RELOAD_SECRET`, the **same value** you give the web
-app. Without it the Space refuses every publish with `reload_packs is disabled: RELOAD_SECRET is
-not set on this Space`, and the catalog can only change by pushing the Space again.
-
-It defaults closed for a reason: `gr.api` endpoints carry no authorization of their own, and the
-Space is shielded only by HF privacy plus a read-scoped token that is already deployed to the web
-tier and to CI. `reload_packs` mutates what the model scores against, so it needs a secret of its
-own. It is read from the environment at `inference/app.py:198` and nowhere else.
-
-### Keeping it awake
-
-Free Spaces sleep after **48 hours** of inactivity, and a cold start re-downloads the weights
-(30–60s). `.github/workflows/keepalive.yml` pings it every 6 hours, but is inert until you set
-two things on the GitHub repo (Settings → Secrets and variables → Actions):
-
-| kind | name | value |
-|---|---|---|
-| secret | `HF_TOKEN` | the read token |
-| variable | `HF_SPACE_HOST` | `<you>-dooh-tag-check.hf.space` |
-
-The host is the Space's *subdomain* form — owner and name joined by a hyphen, not the
-`<you>/dooh-tag-check` slug that `HF_SPACE` takes. Trigger it once by hand (Actions →
-keepalive → Run workflow) to confirm both are right.
-
-If the cron silently stops, the first request after 48h eats the cold start.
-`/api/v1/analyze` returns `503 INFERENCE_WARMING` with `retry_after` rather than hanging, and
-the playground polls itself back to life — so it degrades honestly. But it does degrade.
-
-### 🔴 A Space that sleeps also reverts the catalog
-
-**This is the most dangerous property of deploying the model to a free Space, and it is not a
-cold-start nuisance.** When a slept Space wakes it **rebuilds from its own git repo**, so
-`packs.json` reverts to whatever was committed at the last `git subtree push`. Every tag created
-through the admin UI since then is gone from the model.
-
-What that does, end to end: the slug is missing from the catalog, so `dooh-backend` produces no
-verdict for it, `evaluatePolicy` sees fewer verdicts than blocked tags and falls through to
-`NOT_VERIFIED` — which is a **flag, not a block**. The upload proceeds. Screens quietly stop
-enforcing the categories their owners chose, and nothing surfaces it: no error, no toast, no log
-anyone is reading. For a compliance tool that is the worst available failure mode.
-
-**Nothing re-publishes automatically.** `lifespan` in `tagverify/main.py` initialises the database
-engine and starts the usage pruner; it does not check the model.
-
-Two ways out, in order of preference:
-
-- **Stop using an ephemeral host for the model** — §2 below and
-  [`TAG_PIPELINE_IN_PRODUCTION.md`](./TAG_PIPELINE_IN_PRODUCTION.md) §8. With a persistent disk,
-  the file publish writes is the file the model boots from, and this cannot happen.
-- **Re-publish after any model restart** — `dooh export-packs --push`. Until auto-resync is wired
-  in, treat "the Space restarted" and "the catalog needs republishing" as the same event.
-
-`/api/v1/health` reports `inference.tags` and `inference.packs_version`, so a monitor can catch
-it: if the tag count drops or `packs_version` moves without anyone publishing, the model reverted.
-
-## 2. The web app
+## 1. The web app
 
 Vercel is gone: it cannot host a long-lived Python process, and the connection pool and
-in-process caches are exactly what make the rewrite fast.
+in-process caches are what make this fast.
 
-**Not *any* container host, though — it has to be one that stays running.** Serverless is
-structurally excluded, not merely slow: `reload_packs` swaps an **in-memory** prompt table, and
-that *is* the publish mechanism. Anything that scales to zero or runs per-request throws it away —
-every cold start re-encodes, and a publish reaches only whichever instance happened to answer. So
-no Lambda, no Cloud Functions, no Workers, and no Cloud Run with scale-to-zero.
-
-What works: a plain VM, Fly.io, Render, or Railway — anything that keeps a container alive and can
-attach a persistent disk. GPU platforms are unnecessary; `detector.py` has no device handling and
-this is CPU-only.
-
-The recommended shape is **one box, two containers, `docker-compose`**, in the same region as Neon
-and `dooh-backend`. 2 vCPU / 4GB is comfortable. That also fixes the catalog-reversion problem
-above, because the model boots from a disk the publish wrote. Sizing, what else it fixes and the
-full argument are in [`TAG_PIPELINE_IN_PRODUCTION.md`](./TAG_PIPELINE_IN_PRODUCTION.md) §8.
+**There is no container, and none is needed.** Nothing in this service shells out — no
+`subprocess`, no ffmpeg binary — and every native dependency arrives bundled in its wheel: `av`
+carries ffmpeg statically, `psycopg[binary]` carries libpq, Pillow is prebuilt. So there are no
+apt packages, no build tools and no image to build. The whole install is:
 
 ```bash
-docker build -t dooh-tag-verification .
-docker run -p 8000:8000 --env-file .env dooh-tag-verification
+python3 -m venv /opt/tagverify/venv
+/opt/tagverify/venv/bin/pip install .
+/opt/tagverify/venv/bin/uvicorn tagverify.main:app --host 0.0.0.0 --port 8000
 ```
 
-Or without Docker:
+**Python 3.12 or newer** (`pyproject.toml`). Prefer whatever version you run the tests on — a
+host Python that differs from the development one is a difference nothing has checked.
+
+### Behind a reverse proxy — read this before adding `--proxy-headers`
+
+Add it **only** when something really does terminate TLS in front of this process, and always
+name that proxy:
 
 ```bash
-pip install .
-uvicorn tagverify.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips '<proxy ip>'
+uvicorn tagverify.main:app --host 127.0.0.1 --port 8000 \
+  --proxy-headers --forwarded-allow-ips '<the proxy's IP>'
 ```
 
-**`--proxy-headers` is not optional behind a TLS terminator.** The admin session cookie's
-`Secure` flag is taken from the request scheme; without it, uvicorn sees the proxy's plain-HTTP
-hop and issues the cookie without `Secure`.
+**Never `--forwarded-allow-ips '*'`.** That tells uvicorn to trust `X-Forwarded-For` from any
+client, and `request.client` is what the playground's per-IP rate limit and the admin login
+lockout are both keyed on. With `*`, a caller picks their own IP by setting a header: the limit
+that stands between a public URL and unlimited model spend on your key stops working, and so
+does the only throttle on guessing the admin password.
+
+Without a proxy, leave both flags off. The trade is that the admin session cookie takes its
+`Secure` flag from the request scheme, so over plain HTTP it is issued without `Secure` — which
+is correct behaviour, but it means the password crosses the network in the clear. Do not put
+`/admin` on the open internet without TLS.
+
+### Keeping it running
+
+A `uvicorn` you started by hand dies with your shell and does not come back after a reboot. On a
+VM, systemd is the smallest thing that fixes both:
+
+```ini
+# /etc/systemd/system/tagverify.service
+[Unit]
+Description=DOOH Tag Verification
+After=network-online.target
+
+[Service]
+User=tagverify
+WorkingDirectory=/opt/tagverify/app
+EnvironmentFile=/opt/tagverify/app/.env
+ExecStart=/opt/tagverify/venv/bin/uvicorn tagverify.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`systemctl enable --now tagverify`. Run it as a dedicated non-root user; the service needs no
+privileged port and writes nothing it owns. On a PaaS, the platform's own process supervisor
+does this job and the `ExecStart` line is the only part you need.
+
+A plain VM, Fly.io, Render or Railway all work — anything that keeps a process alive.
+2 vCPU / 4GB, in the same region as Neon and `dooh-backend`. No GPU: there is no local model any
+more, and no persistent disk requirement either, because **nothing is written to disk at all** —
+creatives are held in memory and only their hashes are stored.
+
+### On serverless
+
+An earlier version of this file ruled serverless out as *structurally* impossible, because
+publishing swapped an in-memory prompt table and anything that scales to zero would throw it
+away. **That argument no longer applies** — there is no in-memory catalog and no publish. Being
+honest about it matters, because the weaker reasons are easy to weigh and the old one was not:
+
+- **Cold starts land on the user.** A scale-to-zero instance pays connection setup and app
+  import on the first request, on top of a model call already measured in seconds — and an
+  advertiser is watching an upload spinner for the whole of it.
+- **The connection pool stops being a pool.** Per-request instances open and discard connections,
+  which is exactly the pattern the wire-protocol switch was meant to escape.
+- **The daily prune never fires.** `usage_counters` is swept by a background task started in
+  `lifespan`; a process that exits between requests never reaches it, and the table grows.
+
+None of that is fatal, and a scale-to-zero deployment would work. It would just be slower and
+untidier than a box that stays up, for no saving worth having at this size.
 
 ### Environment
 
 | variable | value |
 |---|---|
 | `DATABASE_URL` | the Neon **pooled** connection string (the host containing `-pooler`) |
-| `HF_SPACE` | `<you>/dooh-tag-check` |
-| `HF_TOKEN` | an HF token with **read** access only |
 | `ADMIN_PASSWORD` | a real password — not the one in your local `.env` |
-| `RELOAD_SECRET` | the **same value** set on the Space (§1) — a real secret, not the one in your local `.env` |
+| `SCORER` | `vlm`. The default, so it can be left unset; set it explicitly anyway, because the alternative is `fake` and a deployment that silently answers from a fixture is the one mistake here that looks like it is working. |
+| `VLM_PROVIDER` | `anthropic` or `gemini` |
+| `VLM_MODEL` | the model id, set **together** with the provider |
+| `ANTHROPIC_API_KEY` *or* `GEMINI_API_KEY` | whichever the provider needs |
 
-All five are required. `ADMIN_PASSWORD` is easy to forget because nothing in the public API
-needs it, but `/admin` refuses every request when it is unset — the admin UI arrives dead
-rather than open, which is the right failure but a confusing one if you were not expecting it.
+`VLM_MODEL` is deliberately not defaulted per provider. A model id that does not match its
+provider is the kind of mistake that shows up as a bill rather than as an error, so both are
+stated or neither is trusted.
 
-`RELOAD_SECRET` is the same kind of trap one step further along: everything works until someone
-presses Publish, which then refuses with `RELOAD_SECRET is not set — refusing to publish`. Note
-the two failure messages name their side, so you never have to guess which half is unset — that
-one is this app; `reload_packs is disabled: …on this Space` is the model.
+`ADMIN_PASSWORD` is easy to forget, because nothing in the public API needs it — but `/admin`
+refuses every request when it is unset. The admin UI arrives dead rather than open, which is the
+right failure and a confusing one if you were not expecting it.
 
-Leave `INFERENCE_URL` unset in production; it is the local-dev escape hatch, and `HF_SPACE`
-takes precedence anyway.
+**Never deploy `SCORER=fake`.** It answers `present: null` for everything without contacting a
+model. Every verdict becomes "needs a human", nothing is ever blocked, and the service looks
+healthy the whole time.
 
-Optional: `PLAYGROUND_RATE_LIMIT_PER_MIN` (default 20) and `ADMIN_LOGIN_ATTEMPTS_PER_MIN`
-(default 5). The playground carries no API key by design, so it is limited per IP — if the
-deployment is public, that limit is what stops it being free inference for anyone who finds
-the URL.
+Optional: `LOG_LEVEL` (default `INFO`), `PLAYGROUND_RATE_LIMIT_PER_MIN` (default 20) and
+`ADMIN_LOGIN_ATTEMPTS_PER_MIN` (default 5). The playground carries no API key by design, so it is
+limited per IP — if the deployment is public, that limit is what stops it being free inference,
+billed to you, for anyone who finds the URL.
 
 ### Scaling
 
-The rate limiter and the threshold/health caches are per-process, so with N workers each gets
-its own. That is fine — the rate limiter's authority is the `usage_counters` table, which is
-shared, and the caches are 30s/60s TTLs over data that changes twice a week. Run one worker
-per core with `--workers N`.
+The rate limiter and the health cache are per-process, so with N workers each gets its own. That
+is fine: the rate limiter's authority is the `usage_counters` table, which is shared, and the
+caches are short TTLs over data that changes rarely. Run one worker per core with `--workers N`.
 
-## 3. Database
+## 2. Database
 
 For a fresh database:
 
 ```bash
 psql "$DATABASE_URL" -f docs/schema.sql   # tables and indexes
-dooh seed-thresholds                      # the 23 tag thresholds, from packs.json
-dooh seed-tags                            # content_tags + pack_header, from packs.json
 ```
 
-For an **existing** database, bring it forward first:
+That is the whole of it. There is nothing to seed — the tag catalog is created through `/admin`
+or the JSON API, and a saved tag is live at the next request.
+
+For an **existing** database, bring it forward:
 
 ```bash
 make migrate            # alembic upgrade head
 make migrate-sql        # the same, printed as SQL instead of applied — a dry run
 ```
 
-`schema.sql` and the migrations are not alternatives: the first describes the destination and
-provisions a new database, the second describes how a database that already holds data gets there.
-**A new column belongs in both**, or provisioning and migrating diverge. Alembic takes
-`DATABASE_URL` from the app's own settings (`migrations/env.py`), so the credential never lands in
-a tracked file.
+The schema file and the migrations are not alternatives: the first describes the destination and
+provisions a new database, the second describes how a database that already holds data gets
+there. **A new column belongs in both**, or provisioning and migrating diverge. Alembic takes
+`DATABASE_URL` from the app's own settings, so the credential never lands in a tracked file.
 
-Both seed commands are safe to re-run: `seed-thresholds` never overwrites a row marked
-`calibrated`, so re-seeding cannot clobber measured thresholds with the guesses in `packs.json`,
-and `seed-tags` never overwrites an existing tag.
+Read `migrate-sql` output before a production run. A migration you have not read is a migration
+you are trusting blind — and two of the four below drop columns.
 
-> **Run the seeding commands from a checkout, not from the container.** `seed-thresholds`,
-> `seed-tags` and `apply-calibration` read `inference/packs.json` and
-> `inference/calibration.json`, and the image deliberately carries only three files out of
-> `inference/` — those two data files are not among them. The commands resolve their paths from
-> the installed `inference` package, so they work from any working directory in a checkout and
-> fail with a `FileNotFoundError` naming the missing path inside the image. `create-key`,
-> `prune-usage` and `health` touch only the database and run fine either way.
->
-> `export-packs` and `POST /api/v1/tags/publish` render **from the database** and need no file, so
-> those do work in the image. That is why `pack_header` exists — see
-> [`TAG_PIPELINE_IN_PRODUCTION.md`](./TAG_PIPELINE_IN_PRODUCTION.md) §4 for the bug it fixed. If
-> publishing fails there, the answer is `dooh seed-tags`, not adding `packs.json` to the
-> `Dockerfile`.
-
-### Migrations
-
-There are two, and an existing database needs both:
-
-| revision | what it adds |
+| revision | what it does |
 |---|---|
-| `0001_api_key_scopes` | `api_keys.scopes` (JSONB, default `[]`) — the `tags:write` scope lives here. It is a migration rather than a schema rewrite because `api_keys` holds live credentials and cannot be recreated. |
-| `0002_pack_header` | `pack_header` — a singleton row holding the non-tag half of `packs.json`. No backfill; `dooh seed-tags` writes the row. |
+| `0001_api_key_scopes` | Adds `api_keys.scopes` (JSONB, default `[]`) — the `tags:write` scope lives here. A migration rather than a schema rewrite because `api_keys` holds live credentials and cannot be recreated. |
+| `0002_pack_header` | Adds `pack_header`, a singleton row holding the non-tag half of the old published pack. **Vestigial** — nothing reads or writes it now. Kept because dropping a table earns nothing. |
+| `0003_drop_phrase_columns` | Drops `content_tags.positives`, `.negatives`, `.rationale`, `.sigmoid_floor`. These were the ranking model's question and had been read by nothing for some time. No fingerprint covers them, so **no cached verdict is re-keyed**. Archived to a JSON file in `inference/` first. |
+| `0004_drop_decision_thresholds` | Drops `tag_thresholds.threshold_low`, `.threshold_high`, `.sigmoid_floor`, `.escalate`. Not a tidy-up: the admin form over them folded into `decision_version`, so saving a number nothing read re-keyed every cached verdict here and in `dooh-backend`, and the same write set `calibrated = false` with nothing left able to set it back. |
 
-What the previous version of this file said — *the existing database needs no migration* — was
-true when the Python rewrite landed and is no longer. What still holds from it: the Python models
-map onto the same tables the previous implementation created, and API keys are still
-`sha256(plaintext)`, so **every key already issued keeps working**. Existing keys simply get an
-empty scope list, which is analyze-only, which is what they already were.
+API keys are `sha256(plaintext)` and always have been, so **every key already issued keeps
+working** across all four. Keys predating `0001` get an empty scope list, which is analyze-only,
+which is what they already were.
 
-## 4. Issue a key
+## 3. Issue a key
 
 ```bash
 dooh create-key "Client name" --rate-limit 60
@@ -282,105 +235,85 @@ dooh create-key "DOOH admin (tags)" --tags-write
 
 Do not add the scope to a key already in use for analyze. A key that scores creatives and a key
 that can change what scoring *means* are different blast radii, and only one of them is handed to
-a busy integration. Without `--tags-write` a key is analyze-only and every `/api/v1/tags` write is
+a busy integration. Without `--tags-write` a key is analyze-only and every catalog write is
 refused with an error naming the scope it lacks.
-
-## 5. Publish the catalog
-
-**A deployment is not finished until the catalog is published.** The model boots from whatever
-`packs.json` was committed at the last `git subtree push`; every tag created through the admin UI
-since then exists only as a database row until someone publishes.
-
-```bash
-dooh export-packs --push
-```
-
-Or `POST /api/v1/tags/publish` with a `tags:write` key, which does exactly the same thing —
-`tagverify/tags/publish.py` is the single implementation both call, because `packs_version` hashes
-the rendered bytes and two renderers would mean two fingerprints for one catalog.
-
-Publishing is **whole-catalog**: it takes everyone's pending edits live, and it moves
-`packs_version`, so every tag reverts to `calibrated: false` until the catalog is recalibrated.
-There is no per-tag publish and there is no publish button in the admin UI — the tags panel shows
-a banner naming this command.
-
-> **⚠️ Unverified — check this on your first container deploy.** `publish_catalog` writes
-> `packs.json` to `/app/inference/` before pushing it. The `Dockerfile` copies that directory as
-> root and then drops to `USER dooh` (uid 10001) with no `chown`, so on the ordinary reading of
-> POSIX permissions the first publish inside the image should fail with a `PermissionError` on
-> that write — the push never happens, because the write comes first and deliberately so (a push
-> against a stale file would be undone by the next restart). This was **not** reproduced: the
-> Docker daemon was not running when it was written down, and it may well be moot on a host that
-> overrides `USER` or mounts a writable volume there. Confirm it before trusting a container
-> publish:
->
-> ```bash
-> docker run --rm --entrypoint sh dooh-tag-verification \
->   -c 'touch /app/inference/.probe && echo writable || echo NOT-writable'
-> ```
->
-> If it prints `NOT-writable`, the fix is a `chown` in the `Dockerfile` (`COPY --chown=dooh:dooh`
-> on the `inference` layer, or `RUN chown dooh:dooh /app/inference`) — **not** baking `packs.json`
-> into the image, which reintroduces the bug
-> [`TAG_PIPELINE_IN_PRODUCTION.md`](./TAG_PIPELINE_IN_PRODUCTION.md) §4 records fixing. Until it
-> is confirmed, publish with `dooh export-packs --push` from a checkout, which is unaffected.
 
 ---
 
-## Verifying a deployment
+## 4. Verifying a deployment
 
 ```bash
 # unauthenticated, safe to hit from anywhere
 curl https://<your-app>/api/v1/health
 
-# the full suite against a real database and a real Space
-pytest
+# the full suite, against a real database
+make check
 ```
 
-`/api/v1/health` reports `database` and `inference` separately, distinguishes "Space is
-warming" from "Space is broken", and always returns 200 with the status in the body. A
-`degraded` status with `inference.warming: true` right after deploy is normal.
-
-Check three fields in it, not just the status:
+`/api/v1/health` always returns 200 with the status in the body, so any non-200 means the app
+itself is down rather than something a monitor has to parse degradation out of. Check four fields
+in it, not just the status:
 
 | field | what it tells you |
 |---|---|
-| `inference.tags` | how many tags the **model** is actually serving. If this is below the active row count in `content_tags`, the catalog is not published — or the Space restarted and reverted it. |
-| `inference.packs_version` | which pack is live. It moving on its own means the model reverted. |
-| `decision.rule` | the banding module this process loaded, at import. Compare with `shasum -a 256 inference/banding.py`; if they differ the server is stale and needs restarting. |
+| `inference.scorer` | which scorer and model are in the request path, as `vlm:gemini:gemini-3.7-flash`. **If this says `fake`, the deployment is answering from a fixture.** |
+| `inference.ok` | whether the active scorer is configured and its catalog is readable. `false` with an error naming a missing API key is the usual first-deploy failure. |
+| `inference.tags` | how many active tags the model is being asked about. It comes from the same database read that builds the prompt, so it cannot disagree with what is actually being scored. |
+| `decision.rule` | a hash of the decision rule this process loaded, at import. If it does not change after you deploy a change to that rule, you are looking at a stale process. |
 
-Then confirm publishing works end to end, before you need it in anger — a `RELOAD_SECRET`
-mismatch is invisible until the first publish:
+`inference.warm` is always `true`, and that is a statement rather than a stub: nothing is loaded
+at startup, so there is no cold state to be warm or cold about.
+
+**Do not treat `inference.packs_version` as a drift alarm.** It used to be one — it fingerprinted
+a pack pushed to a separate machine, so it moving on its own meant the model had reverted. It is
+now computed from the database on every call, over the model id, the prompt and every active
+tag's name. It moves when someone renames a tag or the model id changes, and it cannot move for
+any other reason. Consumers still need it: it is half of the cache key on a verdict, so a caller
+that caches decided verdicts keys on it and on `decision.version` together.
+
+Note that this endpoint does **not** call the provider. There is no process of ours to probe, and
+billing a request on every monitoring hit would buy nothing the next real request does not find
+out anyway. So a green health check means *configured and readable*, not *the provider is up* —
+that shows as a `502 INFERENCE_FAILED` on the first real analyze, not here.
+
+## 5. What the current shape removed
+
+Worth knowing, because it is the reason this file is half the length it was.
+
+The model used to run on a free Hugging Face Space and score against a phrase pack pushed to it.
+Those Spaces sleep after 48 hours, and a slept Space **rebuilds from its own git repo on wake** —
+so the pack reverted to whatever was last pushed, and every tag created through the admin UI
+since then vanished from the model.
+
+End to end: the slug was missing from the catalog, so `dooh-backend` produced no verdict for it,
+saw fewer verdicts than blocked tags, and fell through to `NOT_VERIFIED` — a **flag, not a
+block**. The upload proceeded. Screens quietly stopped enforcing the categories their owners had
+chosen, and nothing surfaced it: no error, no toast, no log anyone was reading. For a compliance
+tool that is the worst available failure.
+
+It required a keepalive cron to make unlikely, a republish after every restart to recover from,
+and a monitor watching the tag count to notice at all. None of those exist now, and none is
+needed: the prompt is read from Postgres per request, so there is no copy of the catalog anywhere
+that can be older than the database.
+
+## 6. Local development
+
+Installing and provisioning are in the README. Once that is done:
 
 ```bash
-dooh export-packs --check    # renders from the DB, writes nothing, exits 1 if it would change
+make dev              # http://127.0.0.1:8000
 ```
 
-If you touched `inference/`, also run the golden ML cases:
+One process, one terminal. Then confirm the database and the scorer are both reachable without
+starting a server:
 
 ```bash
-make inference-smoke
+dooh health
 ```
-
-## Local development
-
-First-time setup — installing, provisioning and seeding — is in the
-[README](../README.md#setup). Once that is done:
-
-```bash
-# terminal 1 — inference
-cd inference && RELOAD_SECRET=dev-secret ./.venv/bin/python app.py     # :7860
-
-# terminal 2 — the app
-make dev                                                               # :8000
-```
-
-With `HF_SPACE` empty in `.env`, the app talks to `INFERENCE_URL`
-(`http://127.0.0.1:7860`), so you can develop without deploying the Space at all.
-
-The local `app.py` reads `RELOAD_SECRET` from its own environment, not from `.env` — it is a
-separate process in a separate virtualenv. Set it inline as above and match it in `.env` if you
-want to exercise publishing locally; leave both unset and everything except publish still works.
 
 There is no asset build step. The CSS is hand-authored and htmx is vendored, so editing a
-template or a stylesheet just needs a browser reload.
+template or a stylesheet just needs a browser reload — but note that `--reload` watches `*.py`
+only, so a Python change restarts the server and a template change does not need to.
+
+Set `SCORER=fake` locally when you are working on something that is not the scorer. It costs
+nothing, needs no key and never leaves the machine. Just never let it reach a deployment.

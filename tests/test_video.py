@@ -3,7 +3,7 @@ Video decoding, frame sampling and media-kind sniffing.
 
 Fixtures are ENCODED AT TEST TIME rather than committed, so there are no opaque binaries in
 the repo and each case states the content it is asserting about in the test itself. It also
-means these tests need no network, no database and no model — same class as test_banding.py.
+means these tests need no network, no database and no model.
 """
 
 from __future__ import annotations

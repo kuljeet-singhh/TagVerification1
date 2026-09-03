@@ -34,7 +34,8 @@ dev:
 # per-IP playground rate limit. Add it only when there is a real reverse proxy in front,
 # together with --forwarded-allow-ips set to that proxy's address.
 #
-# --reload, same as `dev`. This is a development command — production is the Dockerfile CMD —
+# --reload, same as `dev`. This is a development command — production runs uvicorn under a
+# process supervisor, without it; see docs/DEPLOY.md —
 # and without it the process goes stale UNEVENLY, which is the part that costs time: Jinja
 # re-reads templates from disk per render and StaticFiles ignores the ?v= query, so the page
 # keeps updating while the Python stays frozen at startup. The result looks live and is not,
@@ -64,15 +65,18 @@ migrate-sql:
 	$(VENV)/bin/alembic upgrade head --sql
 
 # The decision rules alone. No database, no model, no network — the fastest useful signal
-# in the project, and the one to run while editing banding.py or aggregate.py.
+# in the project, and the one to run while editing decide.py or aggregate.py.
+#
+# tests/test_banding.py was in this list until it was deleted with the rule it guarded, which
+# made the whole target fail on a missing file rather than run the other five.
 test-fast:
-	$(PY) -m pytest tests/test_banding.py tests/test_intake.py \
+	$(PY) -m pytest tests/test_intake.py \
 		tests/test_aggregate.py tests/test_video.py tests/test_templating.py \
 		tests/test_decision_version.py
 
-# All of inference/, not just banding.py. ruff is static, so it needs none of the ML wheels
-# installed in this venv — and the 2,200 lines it used to skip are where the least-reviewed
-# code in the repo lives. The exclusions are in pyproject.toml.
+# inference/ is included even though it is data only now: it costs nothing, and it is the
+# check that would catch a .py file reappearing there. inference/eval/ is excluded in
+# pyproject.toml so ruff does not walk 470 images looking for Python.
 lint:
 	$(VENV)/bin/ruff check tagverify/ tests/ inference/
 
@@ -87,9 +91,6 @@ typecheck:
 	$(VENV)/bin/mypy tagverify/
 
 check: lint test
-
-# Proves that extracting banding.py changed no ML behaviour. Needs inference/.venv, which is
-# separate from the web app's on purpose.
 
 clean:
 	find . -name __pycache__ -type d -prune -exec rm -rf {} +

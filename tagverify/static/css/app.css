@@ -517,6 +517,16 @@ main { flex: 1; width: 100%; }
 .btn-ghost:hover { background: var(--surface-3); color: var(--fg); }
 .btn-danger { color: var(--present-fg); }
 .btn-danger:hover { background: var(--present-bg); }
+/* A button that reads as a link, for an affordance sitting inside a sentence -- the "Edit"
+   that reveals the tag identifier. It is a <button> because it toggles rather than navigates;
+   an <a href="#"> there would put a dead entry in the history and lie to a screen reader. */
+.btn-link {
+  padding: 0; border: 0; background: none;
+  font: inherit; color: var(--accent-text);
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.btn-link:hover { color: var(--fg); }
+
 .btn-block { width: 100%; }
 .btn-lg { padding: 10px 18px; font-size: var(--t-body); }
 .btn-sm { padding: 4px 9px; font-size: var(--t-sm); }

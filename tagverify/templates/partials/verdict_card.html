@@ -1,7 +1,4 @@
 {% import "_icons.html" as ico %}
-{% set t = result.thresholds[verdict.tag] %}
-{% set vetoed = verdict.decided_by == 'sigmoid_floor' %}
-{% set read = verdict.decided_by == 'vlm' %}
 
 <button type="button" class="verdict"
         data-band="{{ verdict.band }}"
@@ -20,72 +17,30 @@
     <span class="verdict-score tnum">{{ "%.3f" | format(verdict.score) }}</span>
   </div>
 
-  {% if read %}
-    {# No ruler, because no threshold was consulted. The model was asked the question and
-       answered it, so `score` is its OWN certainty rather than a similarity — drawing that
-       on an absent/uncertain/present ruler would claim a measurement that never happened,
-       which is the one thing this interface must never do. #}
-    <div class="veto">
-      <b>Read, not ranked.</b>
-      The model was asked directly and answered
-      <span class="mono">{{ 'present' if verdict.present else ('absent' if verdict.present is false else 'not sure') }}</span>,
-      reporting <span class="mono tnum">{{ "%.2f" | format(verdict.score) }}</span> confidence
-      in that answer. No threshold was applied, so there is no band to place it in.
-    </div>
-  {% elif vetoed %}
-    {# A floor-vetoed verdict can have a HIGH softmax score and still read
-       absent, because softmax must sum to 1 and will hand mass to a positive
-       prompt purely by beating equally-irrelevant options. Drawn on the normal
-       ruler that produces a long bar labelled "absent", which looks like a bug.
-       So it gets its own explanation instead. #}
-    <div class="veto">
-      <b>Vetoed by the absolute-resemblance floor.</b>
-      Nothing in the image resembles this tag in absolute terms
-      (<span class="mono tnum">{{ "%.4f" | format(verdict.evidence.sigmoid) }}</span>
-      against a floor of
-      <span class="mono tnum">{{ "%.4f" | format(t.sigmoid_floor) }}</span>),
-      so the relative score is an artefact of the comparison pool, not a detection.
-    </div>
-  {% else %}
-    {# The threshold ruler. A bare width:score% bar cannot show that 0.512
-       landed inside a 0.30–0.55 uncertain band, or how close to an edge it
-       was — which is the whole question a reviewer has. #}
-    <div class="ruler" role="img"
-         aria-label="Score {{ '%.3f' | format(verdict.score) }} against an absent band below
-                     {{ '%.2f' | format(t.threshold_low) }} and a present band above
-                     {{ '%.2f' | format(t.threshold_high) }}">
-      <span class="ruler-seg ruler-absent"
-            style="left:0;width:{{ (t.threshold_low * 100) | round(2) }}%"></span>
-      <span class="ruler-seg ruler-uncertain"
-            style="left:{{ (t.threshold_low * 100) | round(2) }}%;
-                   width:{{ ((t.threshold_high - t.threshold_low) * 100) | round(2) }}%"></span>
-      <span class="ruler-seg ruler-present"
-            style="left:{{ (t.threshold_high * 100) | round(2) }}%;
-                   width:{{ ((1 - t.threshold_high) * 100) | round(2) }}%"></span>
-      <span class="ruler-mark" style="left:{{ (verdict.score * 100) | round(2) }}%"></span>
-    </div>
-    <div class="ruler-ticks">
-      <span>0</span>
-      <span>absent ≤ {{ "%.2f" | format(t.threshold_low) }}</span>
-      <span>{{ "%.2f" | format(t.threshold_high) }} ≤ present</span>
-      <span>1</span>
-    </div>
-  {% endif %}
+  {# NOTHING GOES HERE. No ruler, because no threshold was consulted: `score` is the model's
+     OWN reported certainty, not a similarity to be placed on an absent/uncertain/present
+     scale, and drawing that ruler would claim a measurement that never happened -- the one
+     thing this interface must never do. AGENTS.md rule 3.
 
+     A box reading "Read, not ranked." also used to sit here, explaining that absence. It was
+     written as the `{% if read %}` branch of three, back when the ruler was what a card
+     normally showed and this was the rare exception worth explaining. The ruler went with the
+     ranking model; the box lost its guard and started printing on every card -- an
+     explanation of a departure from a norm no reader has ever seen, restating a verdict the
+     chip above already gives and a score already printed at 3dp. #}
   {% if verdict.band != 'absent' %}
     <p class="verdict-phrase">{{ BANDS[verdict.band].note }}</p>
   {% endif %}
 
   <p class="verdict-phrase">
-    {% if read %}Saw{% else %}Matched{% endif %}
-    <em>&ldquo;{{ verdict.evidence.top_phrase }}&rdquo;</em>
+    Saw <em>&ldquo;{{ verdict.evidence.top_phrase }}&rdquo;</em>
   </p>
 
   <div class="verdict-meta">
     <span>{{ verdict.confidence }} confidence</span>
     <span class="mono">{{ verdict.decided_by }}</span>
     {% if not verdict.calibrated %}
-      <span>{{ 'not measured against the eval set' if read else 'thresholds unmeasured' }}</span>
+      <span>not measured against the eval set</span>
     {% endif %}
     {# For video, WHEN is as actionable as whether — it is what a reviewer scrubs to. #}
     {% if verdict.evidence.frame %}

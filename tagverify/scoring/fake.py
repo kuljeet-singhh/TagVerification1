@@ -61,7 +61,7 @@ def _fixture() -> dict[str, dict[str, bool | None]]:
 async def health(session: AsyncSession) -> ScorerHealth:
     """The real catalog, so the unknown-tag gate behaves exactly as it does in production."""
     rows = await list_tags(session, include_retired=False)
-    specs = {row.slug: (row.description or "").strip() for row in rows}
+    specs = prompt_module.catalog_specs(rows)
     return ScorerHealth(
         tags=sorted(specs),
         packs_version=prompt_module.catalog_fingerprint(MODEL, specs),
@@ -70,7 +70,14 @@ async def health(session: AsyncSession) -> ScorerHealth:
     )
 
 
-async def score_frames(intake: Intake, scorer_health: ScorerHealth) -> list[dict[str, Any]]:
+async def score_frames(
+    intake: Intake,
+    scorer_health: ScorerHealth,
+    #: Accepted and ignored -- nothing here can time out. It is in the signature because the
+    #: suite pins SCORER=fake, so a scorer that did NOT take it would let a caller pass a
+    #: deadline the real scorers require and have every test still pass.
+    deadline_s: float | None = None,
+) -> list[dict[str, Any]]:
     """Canned verdicts, in the same raw-row shape every other scorer produces."""
     canned = _fixture().get(intake.hash, {})
     rows: list[dict[str, Any]] = []

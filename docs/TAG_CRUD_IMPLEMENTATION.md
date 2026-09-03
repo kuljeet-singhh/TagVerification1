@@ -376,6 +376,27 @@ confirm dialog must say how the slug is currently used rather than asking a gene
 *(DOOH should also sweep `devices.blocked_tags` when a slug leaves the catalog — noted, and
 explicitly out of scope here.)*
 
+### 6.1 Retirement is reversible
+
+`restore_tag` flips `status` back to `'active'`, reached from a **Restore** button that renders
+in place of Edit/Retire on a retired row. Retiring was always non-destructive — the row, the
+`eval_images` and the `tag_thresholds` all survive it — and offering no way to use any of that
+again is what made a misclick permanent.
+
+It is deliberately **admin-only**: `DELETE /api/v1/tags/{slug}` gets no matching endpoint,
+because dooh-backend's client documents that verb as a retire and a public un-retire is a
+contract change that service would need to know about first.
+
+Three things restore does that are not obvious from the button:
+
+- **It re-checks the `MAX_TAGS` active cap.** `validate_tag` applies that check on *create*
+  only, so a restore would walk past it — retire one, create one, restore it, and the catalog
+  is over a limit that fails every upload at once rather than degrading.
+- **It does not release the slug.** The same row comes back, so §4's reservation is untouched.
+- **The calibration returns reading superseded.** `packs_version` moved when the tag left and
+  moves again when it returns, so `effective_calibrated` reports the stored measurement as
+  stale. That is rule 4 working, not a bug to fix by "restoring" the calibration too.
+
 ---
 
 ## 7. Admin UI — a third tab

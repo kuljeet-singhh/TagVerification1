@@ -1,0 +1,16 @@
+{# The identifier a name would produce. Swapped into #tag-slug-preview as the author types,
+   and rendered inline on first paint so the line is never momentarily empty.
+
+   Computed by the server from catalog.slugify -- the same function the save uses. See
+   web/admin.py:slug_preview for why that matters more than the round trip costs.
+
+   Takes `slug` and `label`, because an empty slug means two different things: nothing typed
+   yet, or a name with no letters in it. Saying "needs a letter" at an empty form would be
+   telling someone off before they have started. #}
+{%- if slug -%}
+  <span class="mono">{{ slug }}</span>
+{%- elif label and label.strip() -%}
+  <em>&mdash; that name has no letters to build one from</em>
+{%- else -%}
+  <span class="subtle">&mdash;</span>
+{%- endif -%}

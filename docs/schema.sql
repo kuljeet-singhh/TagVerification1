@@ -33,10 +33,6 @@ CREATE TABLE IF NOT EXISTS content_tags (
 	slug TEXT NOT NULL, 
 	label TEXT NOT NULL, 
 	description TEXT NOT NULL, 
-	positives JSONB NOT NULL, 
-	negatives JSONB NOT NULL, 
-	rationale TEXT, 
-	sigmoid_floor REAL, 
 	status TEXT DEFAULT 'active' NOT NULL, 
 	sort_order INTEGER DEFAULT 0 NOT NULL, 
 	extra JSONB DEFAULT '{}'::jsonb NOT NULL, 
@@ -77,10 +73,6 @@ CREATE TABLE IF NOT EXISTS pack_header (
 
 CREATE TABLE IF NOT EXISTS tag_thresholds (
 	slug TEXT NOT NULL, 
-	threshold_low REAL DEFAULT 0.3 NOT NULL, 
-	threshold_high REAL DEFAULT 0.55 NOT NULL, 
-	sigmoid_floor REAL DEFAULT 0.005 NOT NULL, 
-	escalate BOOLEAN DEFAULT true NOT NULL, 
 	calibrated BOOLEAN DEFAULT false NOT NULL, 
 	precision REAL, 
 	recall REAL, 

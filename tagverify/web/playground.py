@@ -30,7 +30,7 @@ from tagverify.analyze import intake as intake_mod
 from tagverify.analyze.run import AnalysisSuccess, run_analysis, write_audit
 from tagverify.auth.deps import playground_rate_limit
 from tagverify.db.session import get_session, session_scope
-from tagverify.scoring import registry
+from tagverify.scoring import registry, vlm
 from tagverify.scoring.base import InferenceError, InferenceWarming
 from tagverify.tags.catalog import list_tags
 from tagverify.tags.groups import group_tags
@@ -64,7 +64,6 @@ async def _shell_context() -> dict[str, Any]:
             "packs_version": live.packs_version,
             "model": live.model,
             "health_class": "is-ok",
-            "scorer_name": registry.name(),
         }
 
 
@@ -158,11 +157,15 @@ async def analyze_fragment(
     upload = intake_mod.upload_from_form(form)
     tags_raw = [str(value) for value in form.getlist("tags")]
 
-    def fail(message: str, *, warming: bool = False) -> HTMLResponse:
+    def fail(message: str, *, retryable: bool = False) -> HTMLResponse:
+        # `retryable` used to be spelled `warming`, which quietly made "the provider is busy"
+        # the ONLY failure that offered a Retry button. A timeout is the failure most likely
+        # to succeed on a second press — measured latency for one unchanged request ran 6.9s
+        # to 41.2s — and it was the one case with no button to press.
         return render(
             request,
             "partials/results_error.html",
-            {"message": message, "retryable": warming},
+            {"message": message, "retryable": retryable},
         )
 
     if upload is None:
@@ -184,15 +187,28 @@ async def analyze_fragment(
         return fail(exc.message)
 
     try:
-        outcome, audit = await run_analysis(session, intake=intake, api_key_id=None)
+        outcome, audit = await run_analysis(
+            session,
+            intake=intake,
+            api_key_id=None,
+            # The playground's own budget, not dooh-backend's. Nothing upstream of this
+            # request aborts and a person is watching it, so the API's default was only ever
+            # borrowed here. It stays explicit now that the two numbers are close: they answer
+            # to different people, and the API's is the one that moves when a caller's does.
+            deadline_s=vlm.INTERACTIVE_TIMEOUT_S,
+        )
     except InferenceWarming:
         return fail(
-            "The inference service is waking up — it sleeps after 48 hours idle and takes "
-            "30–60 seconds to load the model.",
-            warming=True,
+            "The model provider is rate limiting or busy. This usually clears in under a "
+            "minute — on a free-tier API key it may be a daily quota, which does not.",
+            retryable=True,
         )
     except InferenceError as exc:
-        return fail(f"Inference failed: {exc}")
+        # HTTP 200 with an error fragment is what HTMX needs to swap it in, so this is the
+        # only place the failure can be recorded. Without the log line it existed nowhere but
+        # the user's browser.
+        log.warning("playground analysis failed: %s", exc)
+        return fail(f"Inference failed: {exc}", retryable=vlm.is_timeout(exc))
 
     if not isinstance(outcome, AnalysisSuccess):
         return fail(

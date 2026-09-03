@@ -82,56 +82,45 @@ class ApiKey(Base):
 
 class TagThreshold(Base):
     """
-    Per-tag decision thresholds.
+    Per-tag CALIBRATION state. The name is the table's, and the table's name is history.
 
-    WHY THESE ARE SEPARATE FROM THE PROMPTS
-    ---------------------------------------
-    This used to read "the prompt packs MUST live in inference/packs.json ... there is no way
-    around that, and storing prompts here too would just create two sources of truth". The
-    prompts now live in `content_tags` below, so that is no longer where they are -- but the
-    reasoning was half right and the half that held is worth keeping.
+    It held decision thresholds: two cutoffs and a resemblance floor applied to a similarity
+    score. Migration 0004 dropped all three, plus `escalate`, because `decide()` stopped
+    reading them when the ranking model was removed in f357a1c -- a similarity needed
+    calibrating before it meant anything, and a read model answers the question instead.
 
-    What was true: the Space encodes prompts into text embeddings at startup, so changing one
-    still means a restart. packs.json remains how the prompts reach the model; it is just
-    GENERATED from the table now instead of hand-edited. What the objection got right was the
-    drift risk, and that is answered by direction rather than by location: one authority
-    (Postgres), one direction (export), and nobody editing the file by hand.
+    WHAT IS LEFT, AND WHY IT IS NOT THE SAME THING
+    ----------------------------------------------
+    One question: has this tag ever been measured against labelled images, and does that
+    measurement still describe the prompts we are serving? `packs_version_seen` is the second
+    half and is what makes the first half honest -- a calibration taken against a different
+    catalog is stale, not calibrated, and `decide.effective_calibrated` is the only place that
+    comparison is made. AGENTS.md rule 4.
 
-    Thresholds are different. They are only ever *comparisons against a returned score*, so
-    the API tier can apply them after the fact. Keeping them here means calibration results
-    and hand-tuning take effect immediately, with no redeploy — which matters, because
-    thresholds are the thing that will actually get tuned repeatedly.
-
-    `packs_version_seen` records which pack fingerprint a threshold was calibrated against,
-    so we can spot thresholds that are stale because someone rewrote the prompts underneath
-    them. See tagverify/tags/decide.py.
+    NOTHING WRITES THIS TABLE TODAY. `dooh apply-calibration` went with the ranking model and
+    the admin hand-edit form went with the thresholds, so every row here is a historical
+    measurement and all of them are stale against the live fingerprint. That is reported
+    truthfully rather than hidden. `docs/VLM_SCORING.md` §5.2 has the eval harness writing
+    these columns back; the table is kept, unchanged in shape, so that lands as a writer and
+    not as a migration.
     """
 
     __tablename__ = "tag_thresholds"
 
     slug: Mapped[str] = mapped_column(Text, primary_key=True)
-    threshold_low: Mapped[float] = mapped_column(
-        REAL, nullable=False, default=0.3, server_default=text("0.3")
-    )
-    threshold_high: Mapped[float] = mapped_column(
-        REAL, nullable=False, default=0.55, server_default=text("0.55")
-    )
-    sigmoid_floor: Mapped[float] = mapped_column(
-        REAL, nullable=False, default=0.005, server_default=text("0.005")
-    )
-    escalate: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True, server_default=text("true")
-    )
 
-    #: False until calibrate.py has run against labelled images for this tag.
+    #: False until this tag has been measured against labelled images. Never read raw: pass it
+    #: through `decide.effective_calibrated`, which also checks `packs_version_seen`.
     calibrated: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
-    #: Measured precision at the chosen threshold, if calibrated. Note that
-    #: apply-calibration stores the Wilson LOWER BOUND here, not the point estimate.
+    #: Measured precision, if calibrated. The rows written by the retired `apply-calibration`
+    #: hold the Wilson LOWER BOUND here, not the point estimate.
     precision: Mapped[float | None] = mapped_column(REAL)
     recall: Mapped[float | None] = mapped_column(REAL)
-    #: Pack fingerprint these numbers were tuned against.
+    #: The `packs_version` these numbers were measured against. Null means "measured, but we
+    #: did not record against what" -- treated as current, because inventing staleness we
+    #: cannot demonstrate is its own kind of dishonesty.
     packs_version_seen: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -236,35 +225,41 @@ class UsageCounter(Base):
 
 class ContentTag(Base):
     """
-    The tag catalog: every tag the detector knows, prompts included.
+    The tag catalog: every category the scorer knows, and the name each one is asked by.
 
-    This table is the source of truth. `inference/packs.json` is generated from it by
-    `dooh export-packs` and read by the model tier at import; nothing hand-edits that file
-    any more. The direction is one-way on purpose -- the objection recorded above about two
-    sources of truth is answered by there being one authority and one direction, not by
-    keeping prompts out of the database.
+    This table is the source of truth, and now the ONLY one -- there is no exported file and
+    no publish step. A row written here is live at the next request, because the scorer reads
+    its prompt per request rather than holding a compiled pack.
 
-    A tag IS its prompts. `positives` are what we are hunting; `negatives` are hard negatives
-    -- things that look confusably similar and are NOT the tag -- and they do most of the
-    work. See the authoring rules in packs.json and docs/TAG_CRUD_IMPLEMENTATION.md 1.
+    A TAG IS ITS NAME. `label` is sent to the model as `- alcohol: Alcoholic content` and is
+    the whole of what it is told to look for, so name quality IS tag quality; see AGENTS.md
+    rule 6. It is also half of `packs_version` -- `scoring/prompt.py:catalog_fingerprint`
+    hashes every active tag's slug and name -- so RENAMING one invalidates verdicts decided
+    under the old name, which is exactly what should happen.
+
+    `description` is NOT part of the question and is in neither fingerprint. It is what a
+    screen owner reads under the name when choosing what to block, it is optional, and editing
+    it re-scores nothing. It was the prompt until the name-only change, and every docstring in
+    this repo said so -- which is why this one says the opposite loudly rather than quietly.
+
+    `positives`, `negatives`, `rationale` and `sigmoid_floor` were dropped in migration 0003.
+    They were SigLIP's question: it ranked an image against a pool of phrases and could not
+    answer without one. Nothing has read them since SigLIP was removed in f357a1c, and they
+    were never in either fingerprint. The packs themselves are kept in
+    `inference/phrase_packs_archive.json`, beside gate_cache.json, for the same reason.
     """
 
     __tablename__ = "content_tags"
 
     slug: Mapped[str] = mapped_column(Text, primary_key=True)
+
+    #: THE PROMPT. Not a display label -- see the class docstring.
     label: Mapped[str] = mapped_column(Text, nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
 
-    positives: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    negatives: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-
-    #: Why THESE negatives. Free prose, carried over from the `//negatives` keys in
-    #: packs.json, where it records measurements that would otherwise be lost -- e.g. that a
-    #: hamburger scored 0.939 for `alcohol` until bar-food scenes were named as negatives.
-    rationale: Mapped[str | None] = mapped_column(Text)
-
-    #: Per-tag override of the pack default. Only `revealing_clothing` sets one today.
-    sigmoid_floor: Mapped[float | None] = mapped_column(REAL)
+    #: A blurb for the screen owner, and nothing the model sees. NOT NULL but freely empty:
+    #: "" is the absent case, because the picker that renders it treats blank and missing
+    #: identically and a nullable column would buy a distinction nothing consumes.
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
     #: 'active' | 'retired'. Text rather than an enum because nothing else here uses one.
     #: Retired never means deleted -- see docs/TAG_CRUD_IMPLEMENTATION.md 6: a hard delete
@@ -274,8 +269,12 @@ class ContentTag(Base):
         Text, nullable=False, default="active", server_default=text("'active'")
     )
 
-    #: Position in the exported file. Reordering tags would change packs.json's bytes and so
-    #: its fingerprint, for no reason, so the order is preserved rather than re-derived.
+    #: Display order in the admin table and the playground picker, and nothing more.
+    #:
+    #: It once set the position of a tag in the exported pack file, so reordering rewrote that
+    #: file's bytes and moved its fingerprint — a purely cosmetic change re-keying every cached
+    #: verdict. That cannot happen now: `scoring/prompt.py::catalog_fingerprint` sorts by slug
+    #: precisely so no ordering, stored or incidental, can reach a fingerprint.
     sort_order: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
@@ -303,12 +302,12 @@ class ContentTag(Base):
 
 class PackHeader(Base):
     """
-    The part of `inference/packs.json` that is not tags.
+    The part of the retired published pack that was not tags.
 
-    `$comment`, `prompt_template`, `shared_distractors` and `defaults` -- packs.py's
-    FILE_LEVEL_KEYS. They used to live only in the file, which made `dooh export-packs` read
-    the file in order to write it. That circular dependency is why publishing failed inside
-    the Docker image, which copies three files out of `inference/` and not the pack.
+    `$comment`, `prompt_template`, `shared_distractors` and `defaults` -- the pack's
+    file-level keys. They used to live only in the file, which made `dooh export-packs` read
+    the file in order to write it. That circular dependency is why publishing worked from a
+    checkout and failed from a deployment, which never carried the pack.
 
     WHY `body` IS TEXT AND NOT JSONB
     --------------------------------
@@ -324,9 +323,10 @@ class PackHeader(Base):
     their order because Python dicts are insertion-ordered, and `render_pack` re-emits them
     exactly as it always did.
 
-    These are not comments, `$comment` aside. detector.py reads `prompt_template`,
-    `shared_distractors` and `defaults` at load time -- they are live scoring inputs, so an
-    edit here moves every verdict in the system.
+    NOTHING READS THIS TABLE NOW. `prompt_template`, `shared_distractors` and `defaults`
+    were live scoring inputs while a detector loaded them at startup; that detector, the pack
+    it loaded and the export that wrote it are all gone. The table is kept because dropping
+    one earns nothing and a migration to do it is a migration to review.
     """
 
     __tablename__ = "pack_header"

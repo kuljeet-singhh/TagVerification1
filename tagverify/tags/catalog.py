@@ -6,15 +6,24 @@ rules that decide what a tag may contain cannot drift between them.
 
 WHY THE VALIDATION IS THE INTERESTING PART
 ------------------------------------------
-A tag is not a database row, it is a list of positive phrases plus HARD NEGATIVES, and the
-negatives do most of the work. From the pack file's own header, with the measurement
-attached: with only "a tin of baby formula" as a negative, infant formula scored 0.709 --
-wrongly present. Adding "a scoop of baby formula milk powder" dropped it to 0.224 while real
-whey protein stayed at 0.999. Asymmetric phrasing rigs the softmax toward whichever side owns
-the words that describe the photo.
+A tag is not a database row, it is A CATEGORY THE MODEL IS ASKED ABOUT, and the `label` is
+the whole of what it is told to look for. So the only validation that touches accuracy is the
+one that reads the name. That is why the short-name warning below is not decoration: it is the
+last check standing between a vague name and a vague verdict, and unlike a threshold there is
+no second knob to turn afterwards.
 
-A created tag goes live as soon as the pack is published, with no measured thresholds and no
-activation gate. So these checks, plus the publish runbook, ARE the safety model.
+`description` is no longer part of the question. It is what a screen owner reads in DOOH's
+blocked-categories picker, and it is validated as prose rather than as a prompt.
+
+The phrase rules that used to live here went with migration 0003, and they were the bulk of
+this module: duplicate phrases, positive/negative overlap, cross-tag phrase ownership,
+mid-sentence capitalisation. Every one of them protected SigLIP's rival pools -- a phrase
+shared between two tags was dropped from BOTH, silently weakening the competition each relied
+on. There are no pools now, so enforcing any of it would be theatre.
+
+A created tag is LIVE at the next request -- no pack, no publish step, no activation gate. So
+these checks are the safety model, and there is less of it than there looks: what stops a bad
+tag is a well-written description, and the warnings are how we ask for one.
 """
 
 from __future__ import annotations
@@ -30,18 +39,61 @@ from tagverify.db.models import ContentTag
 
 SLUG_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
-#: Below this a description is too thin to be a prompt. Advisory, never a refusal.
 
-#: Below this a description is too thin to be a prompt. Advisory, never a refusal: a short
-#: description is a weak tag, not an invalid one, and a rule that refuses teaches people to
-#: pad it to 41 characters rather than to write a better one.
-GOOD_DESCRIPTION = 40
+def slugify(label: str) -> str:
+    """
+    The permanent identifier, derived from the name a person typed.
+
+    THE ONLY IMPLEMENTATION, and that is the point of moving it here. There were two, in
+    JavaScript -- one in this repo's admin page and one in DOOH's tag dialog -- and neither was
+    authoritative because the server only ever validated the result. The admin form now shows
+    the derived slug back to the author BEFORE they commit to it, and a preview computed by a
+    different copy of the transform than the one that saves is worse than no preview at all.
+
+    Deliberately identical to the JS it replaces, so no slug already in the catalog would
+    derive differently and a reader comparing the two finds no surprise.
+
+    The leading-letter strip is the lossy step and the reason `slug_from_label` exists: SLUG_RE
+    requires a leading letter, so "3D printing" becomes `d_printing` -- valid, and not what
+    anyone wanted. That is not a bug to fix here (guessing at "three_d_printing" would be worse
+    and unpredictable); it is why the admin form keeps an override.
+    """
+    slug = label.strip().casefold()
+    slug = re.sub(r"[^a-z0-9]+", "_", slug)
+    slug = re.sub(r"^_+|_+$", "", slug)
+    return re.sub(r"^[^a-z]+", "", slug)
+
+
+def slug_from_label(label: str) -> str:
+    """
+    `slugify`, refusing in the caller's own terms when it cannot produce one.
+
+    The message says NAME, not slug. Someone using the admin form never typed a slug, and
+    "Slug must start with a letter" is advice about a field that is not on their screen.
+    """
+    slug = slugify(label)
+    if not SLUG_RE.match(slug):
+        raise TagValidationError(
+            f"“{label.strip()}” cannot become an identifier — a tag's name needs a letter in "
+            f"it. Rename it, or set the identifier by hand."
+        )
+    return slug
+
+#: Below this a NAME is too thin to be a prompt. Advisory, never a refusal: a short name is a
+#: weak tag, not an invalid one, and a rule that refuses teaches people to pad it to 13
+#: characters rather than to name the thing better.
+#:
+#: It used to guard the description, when the description was what the model was asked. The
+#: name is now the whole of what it is told to look for, so this moved with the job. Shorter
+#: than the old 40, because a name is a noun phrase and not a sentence: "Alcoholic content" is
+#: 17 characters and is a good one, while "dog" and "cat" are the two in this catalog that
+#: this warning is actually for.
+GOOD_LABEL = 12
 
 
 
-#: Mirrors MAX_TAGS_PER_CALL in inference/app.py, which is the authority. Duplicated rather
-#: than imported because tagverify must never import from the model tier (see AGENTS.md);
-#: this follows the same pattern fetch_demo_eval.py uses for MIN_PER_CLASS.
+#: THE authority, now that there is no model tier holding a MAX_TAGS_PER_CALL to mirror. This
+#: used to be the smaller half of a pair, kept below the Space's own per-call ceiling;
 #:
 #: It is a real ceiling, not a guard rail: DOOH sends the FULL catalog on every analyze call,
 #: so exceeding it does not degrade anything, it makes every upload fail at once. Kept BELOW
@@ -67,69 +119,8 @@ class ValidatedTag:
     slug: str
     label: str
     description: str
-    positives: list[str]
-    negatives: list[str]
-    rationale: str | None
-    sigmoid_floor: float | None
     #: Non-blocking advice. Shown next to the saved tag, never a reason to refuse.
     warnings: list[str] = field(default_factory=list)
-
-
-def normalise_phrase(raw: str) -> str:
-    """
-    Phrases are substituted into "This is a photo of {}." so they must read as a noun phrase
-    mid-sentence. Trailing punctuation is stripped rather than rejected -- it is a typo, not a
-    decision, and refusing the whole form over one full stop helps nobody.
-
-    Case is deliberately NOT forced. Every phrase shipped today is lowercase, but a brand name
-    is a legitimate reason to capitalise and silently lowercasing it would be a content change
-    we were never asked to make. A leading capital earns a warning instead.
-    """
-    return re.sub(r"[.\s]+$", "", raw.strip())
-
-
-def _clean_list(raw: list[str], what: str, minimum: int) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for item in raw:
-        phrase = normalise_phrase(item)
-        if not phrase:
-            continue
-        if phrase.casefold() in seen:
-            raise TagValidationError(f"Duplicate {what[:-1]}: “{phrase}”.")
-        seen.add(phrase.casefold())
-        out.append(phrase)
-    if len(out) < minimum:
-        raise TagValidationError(
-            f"A tag needs at least {minimum} {what} — this one has {len(out)}. "
-            f"The {what} are what the model compares against; too few and it has nothing to "
-            f"weigh the image against."
-        )
-    return out
-
-
-async def _existing_positives(
-    session: AsyncSession, *, exclude_slug: str | None = None
-) -> dict[str, str]:
-    """
-    Every other ACTIVE tag's positives, mapped phrase -> owning slug.
-
-    Retired tags are excluded on purpose. The collision matters because two tags sharing a
-    phrase lose it from both their rival pools -- but a retired tag is not exported, so its
-    phrases are not in the pack and cannot be in anyone's pool. Blocking on them would refuse
-    wording that is genuinely free. (The SLUG check above deliberately does the opposite and
-    does include retired rows: the row still exists, and reusing its slug would inherit its
-    eval images and thresholds.)
-    """
-    stmt = select(ContentTag.slug, ContentTag.positives).where(ContentTag.status == "active")
-    rows = (await session.execute(stmt)).all()
-    owned: dict[str, str] = {}
-    for slug, positives in rows:
-        if slug == exclude_slug:
-            continue
-        for phrase in positives or []:
-            owned.setdefault(normalise_phrase(phrase).casefold(), slug)
-    return owned
 
 
 async def validate_tag(
@@ -138,16 +129,12 @@ async def validate_tag(
     slug: str,
     label: str,
     description: str,
-    positives: list[str],
-    negatives: list[str],
-    rationale: str | None = None,
-    sigmoid_floor: float | None = None,
     existing: ContentTag | None = None,
 ) -> ValidatedTag:
     """Validate a create (existing=None) or an update. Raises TagValidationError."""
     # Trimmed and lowercased rather than refused: a slug is an identifier, and "Pet_Supplies"
     # is a typo, not a decision. Normalising also means `Pet_supplies` cannot be created
-    # alongside `pet_supplies` and quietly compete with it in the same rival pool.
+    # alongside `pet_supplies` -- two rows a screen owner would read as one blocked category.
     slug = slug.strip().casefold()
     if not SLUG_RE.match(slug):
         raise TagValidationError(
@@ -158,10 +145,32 @@ async def validate_tag(
     if existing is None:
         clash = await session.get(ContentTag, slug)
         if clash is not None:
-            # Including a retired one: the slug still owns that tag's eval images and
-            # thresholds, and a reused slug would silently inherit both.
+            # Including a retired one: the slug still owns that tag's eval images and its
+            # calibration row, and a reused slug would silently inherit both.
+            #
+            # WORDED FROM WHAT THEY ACTUALLY TYPED. The admin form derives the slug from the
+            # label, so telling someone who typed "Alcoholic content" that "the slug 'alcohol'
+            # is in use" names a field they never filled in and a word they never wrote. But
+            # the override exists, and "'X' becomes the identifier 'Y'" is equally wrong when
+            # they typed Y themselves.
+            #
+            # Comparing against the derivation is how this stays true either way, and it needs
+            # no extra parameter threaded through: if the slug IS what the label produces, it
+            # was derived (or typed to match, which reads the same).
             state = "retired" if clash.status == "retired" else "in use"
-            raise TagValidationError(f"The slug “{slug}” is already {state}.")
+            derived = slug == slugify(label)
+            raise TagValidationError(
+                (
+                    f"“{label.strip()}” becomes the identifier “{slug}”, which is already "
+                    f"{state} (“{clash.label}”). Choose a different name, or set the "
+                    f"identifier by hand."
+                )
+                if derived
+                else (
+                    f"The identifier “{slug}” is already {state} (“{clash.label}”). "
+                    f"Retiring a tag does not release it — choose another."
+                )
+            )
 
         active = await session.scalar(
             select(func.count()).select_from(ContentTag).where(ContentTag.status == "active")
@@ -178,77 +187,34 @@ async def validate_tag(
     label = label.strip()
     description = description.strip()
     if not label:
-        raise TagValidationError("Label is required — it is what a screen owner sees.")
-    if not description:
-        raise TagValidationError("Description is required — it is what a screen owner sees.")
-
-    # No minimum. The phrases were SigLIP's question -- it ranked an image against them and
-    # could not answer without a pool -- and SigLIP is gone. They are kept as nullable columns
-    # so a rollback to `main` is a checkout rather than a re-authoring exercise, and validated
-    # if supplied so a half-filled tag cannot poison that rollback.
-    positives = _clean_list(positives, "positives", 0)
-    negatives = _clean_list(negatives, "negatives", 0)
-
-    overlap = {p.casefold() for p in positives} & {n.casefold() for n in negatives}
-    if overlap:
         raise TagValidationError(
-            f"“{sorted(overlap)[0]}” is listed as both a positive and a negative."
+            "A name is required — it is what the model is asked to look for, and what a "
+            "screen owner sees."
         )
 
-    # The rule that comes from the code rather than the docs. detector.py interns prompts by
-    # exact string and subtracts a tag's own phrases from its rival pool, so a phrase shared
-    # between two tags is removed from BOTH their rival sets -- silently weakening cross-tag
-    # competition for each. That competition is what took a gym poster's `gambling` score from
-    # 0.974 to 0.061, so this is a correctness rule, not tidiness.
-    owned = await _existing_positives(session, exclude_slug=existing.slug if existing else None)
-    for phrase in positives:
-        owner = owned.get(phrase.casefold())
-        if owner:
-            raise TagValidationError(
-                f"“{phrase}” is already a positive for “{owner}”. A phrase shared between two "
-                f"tags is dropped from both of their rival pools, which weakens the "
-                f"competition both rely on. Word it differently."
-            )
-
-    if sigmoid_floor is not None and not 0 <= sigmoid_floor <= 1:
-        raise TagValidationError("Sigmoid floor must be between 0 and 1.")
+    # The description is NOT required, and has not been since the model stopped reading it. It
+    # is what a screen owner reads under the name in DOOH's blocked-categories picker, which
+    # renders nothing at all when it is blank (`components/ui/multi-select.tsx`) -- so refusing
+    # a save over it would be a chore with no verdict and no customer behind it. Stripped
+    # rather than left as typed, so "   " is stored as "" and the picker's truthiness check
+    # sees what it expects.
 
     warnings: list[str] = []
 
-
-    if len(description) < GOOD_DESCRIPTION:
-        # Load-bearing under a VLM in a way it never was under SigLIP, where it was only the
-        # blurb a screen owner read in the picker. It is now the whole question the model is
-        # asked, so a vague one is a vague verdict — and unlike a threshold there is no second
-        # knob to turn afterwards.
+    if len(label) < GOOD_LABEL:
+        # THE check. The name is the whole of what the model is told to look for -- the
+        # instruction in scoring/prompt.py carries everything about HOW to decide, and the
+        # catalog supplies only WHICH categories -- so a vague name is a vague verdict, and
+        # unlike a threshold there is no second knob to turn afterwards.
         warnings.append(
-            "The description is short. It is what the model is actually asked, so name the "
-            "thing, name its boundary, and say what does NOT count."
-        )
-    rationale = (rationale or "").strip() or None
-    # Only worth asking for when there ARE negatives to justify. On a phrase-less tag it read
-    # "say why these negatives were chosen" about an empty list, which is the kind of advice
-    # that teaches people to stop reading the warnings.
-    if not rationale and negatives:
-        warnings.append(
-            "No rationale recorded. Saying why these negatives were chosen is what stops the "
-            "next person undoing a fix they cannot see."
-        )
-    capitalised = [p for p in positives + negatives if p[:1].isupper()]
-    if capitalised:
-        warnings.append(
-            f"“{capitalised[0]}” starts with a capital. Phrases are substituted into "
-            f"“This is a photo of {{}}.”, so they read mid-sentence."
+            "The name is short. It is the whole of what the model is told to look for, so "
+            "“Dogs and puppies” gives it more to go on than “dog”."
         )
 
     return ValidatedTag(
         slug=slug,
         label=label,
         description=description,
-        positives=positives,
-        negatives=negatives,
-        rationale=rationale,
-        sigmoid_floor=sigmoid_floor,
         warnings=warnings,
     )
 
@@ -274,10 +240,6 @@ async def create_tag(session: AsyncSession, *, actor: str = "admin", **fields) -
             slug=valid.slug,
             label=valid.label,
             description=valid.description,
-            positives=valid.positives,
-            negatives=valid.negatives,
-            rationale=valid.rationale,
-            sigmoid_floor=valid.sigmoid_floor,
             status="active",
             sort_order=(last or 0) + 1,
             extra={},
@@ -295,6 +257,11 @@ async def update_tag(
     """
     Validate and apply an edit. The caller commits and invalidates the memos.
 
+    Edit exists rather than delete-and-recreate because a slug owns its eval images and its
+    measured thresholds; recreating would strand both. What is edited now is the description,
+    which IS the prompt -- so an edit here moves `packs_version` and correctly stales every
+    verdict decided against the old wording.
+
     The `/` is load-bearing, not style. `validate_tag` REQUIRES a `slug` field -- that is how
     it rejects a rename, by comparing the submitted value against `existing.slug`. Without
     the marker, a caller's `slug=` binds to this positional parameter instead of landing in
@@ -306,22 +273,10 @@ async def update_tag(
     if row is None:
         raise TagValidationError(f"No tag “{slug}”.")
 
-    # The floor is MEASURED (dooh apply-calibration), never typed into the edit form, so
-    # neither the admin form nor TagPayload sends one. Absent has to mean "leave it alone":
-    # the assignment below is unconditional, so without this, editing a tag's negatives --
-    # the whole reason edit exists -- silently discards the calibrated floor that rule 3
-    # checks BEFORE the score bands.
-    if fields.get("sigmoid_floor") is None:
-        fields["sigmoid_floor"] = row.sigmoid_floor
-
     valid = await validate_tag(session, existing=row, **fields)
 
     row.label = valid.label
     row.description = valid.description
-    row.positives = valid.positives
-    row.negatives = valid.negatives
-    row.rationale = valid.rationale
-    row.sigmoid_floor = valid.sigmoid_floor
     row.updated_at = datetime.now(UTC)
     row.updated_by = actor
     await session.flush()
@@ -342,6 +297,64 @@ async def retire_tag(session: AsyncSession, slug: str, *, actor: str = "admin") 
     if row is None:
         raise TagValidationError(f"No tag “{slug}”.")
     row.status = "retired"
+    row.updated_at = datetime.now(UTC)
+    row.updated_by = actor
+    await session.flush()
+    return row
+
+
+async def restore_tag(session: AsyncSession, slug: str, *, actor: str = "admin") -> ContentTag:
+    """
+    Put a retired tag back in the catalog. The inverse of `retire_tag`, and the reason
+    retirement is allowed to be non-destructive in the first place.
+
+    Retiring kept the row, its `eval_images` and its `tag_thresholds` -- that is the whole
+    argument for "retire, never delete" -- and then offered no way to use any of it again, so
+    a misclick was permanent and a category could never come back when policy changed.
+
+    WHAT THIS COSTS, because it is not visible from the button:
+    the tag re-enters `GET /api/v1/tags` and the prompt, so `packs_version` moves and every
+    cached verdict here and in dooh-backend re-keys -- every creative is analysed once more, at
+    the model's price. Retiring costs exactly the same; it is a property of changing the
+    catalog, not of this direction.
+
+    ITS CALIBRATION COMES BACK READING SUPERSEDED, AND THAT IS CORRECT. The stored
+    `tag_thresholds` row survived, but `decide.effective_calibrated` compares its
+    `packs_version_seen` against the live fingerprint, which moved when the tag left and moves
+    again now. A measurement taken against a different catalog is stale, not calibrated --
+    AGENTS.md rule 4. Do not "restore" the calibration alongside the tag.
+
+    It does NOT release the slug: this revives the same row, so `validate_tag`'s reservation
+    (a retired slug is still taken) is untouched and this is not a way to free a name.
+    """
+    row = await get_tag(session, slug)
+    if row is None:
+        raise TagValidationError(f"No tag “{slug}”.")
+
+    if row.status != "retired":
+        # Never a silent no-op. The button only renders on a retired row, so reaching here
+        # means the table was stale -- say so rather than reporting a success that did nothing.
+        raise TagValidationError(
+            f"“{row.label}” is already active. Reload the page."
+        )
+
+    # THE ONE CHECK THAT IS NOT A MIRROR OF `retire_tag`. `validate_tag` refuses a new tag at
+    # MAX_TAGS active, but that runs on CREATE -- restoring would walk straight past it, and
+    # retire five / create five / restore five would leave the catalog over the cap. Which is
+    # not a soft limit: see MAX_TAGS above, exceeding it fails every upload at once rather than
+    # degrading anything.
+    active = await session.scalar(
+        select(func.count()).select_from(ContentTag).where(ContentTag.status == "active")
+    )
+    if (active or 0) >= MAX_TAGS:
+        raise TagValidationError(
+            f"The catalog is full at {MAX_TAGS} active tags. Every analyze call sends the "
+            f"whole catalog, and the model refuses more than {MAX_TAGS} in one request — so "
+            f"bringing this one back would fail every upload, not just this tag. Retire "
+            f"another first."
+        )
+
+    row.status = "active"
     row.updated_at = datetime.now(UTC)
     row.updated_by = actor
     await session.flush()

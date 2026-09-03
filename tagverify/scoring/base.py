@@ -45,9 +45,9 @@ class ScorerHealth:
     #: `decided_by` carries the mechanism.
     model: str
 
-    #: slug -> the sentence the model is asked to judge. Empty for SigLIP, whose question is
-    #: a phrase pack encoded inside the Space rather than text we send. Carried here so the
-    #: scoring call does not need a second database read on the hot path.
+    #: slug -> the text the model is asked to look for, which is the tag's NAME. Built by
+    #: `prompt.catalog_specs`, the one place that decides which column that is. Carried here
+    #: so the scoring call does not need a second database read on the hot path.
     specs: dict[str, str] = field(default_factory=dict)
 
 

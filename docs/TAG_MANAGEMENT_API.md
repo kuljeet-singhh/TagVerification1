@@ -3,11 +3,24 @@
 **Feature:** DOOH admins create content tags through an API in `profile`; screen owners then block them.
 **Spans:** `profile` (owns the API and the taxonomy) · `dooh-backend` (proxies, admin-gated) · `dooh-frontend` (admin UI)
 **Status:** ⬜️ **Superseded** — see [TAG_CRUD_IMPLEMENTATION.md](./TAG_CRUD_IMPLEMENTATION.md)
-for what was actually built. Kept for its measurements and its analysis of what a tag is,
-both of which still hold. What changed: §4.1's "Postgres becomes the source of truth" was
+for what was actually built. Kept for its measurements, which still hold and are the reason
+this file is here. What changed: §4.1's "Postgres becomes the source of truth" was
 adopted, but §4.2's `draft`/`active`/`retired` state machine and §4.4's evidence-gated
-`activate` endpoint were **not** — a created tag goes live on the next publish. Its file
+`activate` endpoint were **not** — a created tag is live at the next request. Its file
 paths are stale throughout: the package is `tagverify/`, not `dooh/`.
+
+> **§1's premise no longer describes the system.** "A tag is a prompt pack, not a database
+> row" was true of SigLIP, which ranked an image against a pool of phrases. That model was
+> removed in `f357a1c`, and migration `0003` dropped the `positives`, `negatives`,
+> `rationale` and `sigmoid_floor` columns with it. **A tag is now its description** — one
+> sentence, sent to the model verbatim, and the whole of what is asked.
+>
+> Read §1–§2 as history, and read the two authoring rules in §1 as advice about what a
+> description must say rather than about a phrase pool: mirror the confusable case, and name
+> the neighbour that actually gets mistaken for the thing. The 0.709 → 0.224 measurement is
+> why the exclusion clause in a description earns its keep. The phrases themselves are
+> archived at `inference/phrase_packs_archive.json`.
+
 **Written:** 2026-08-24
 **Related:** [SCREEN_CONTENT_POLICY.md](./SCREEN_CONTENT_POLICY.md) — the feature this extends
 

@@ -34,6 +34,7 @@ import base64
 import binascii
 import json
 import logging
+import time
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,7 +77,7 @@ def client() -> Any:
     if not key:
         raise InferenceError(
             "VLM_PROVIDER=gemini but GEMINI_API_KEY is not set. "
-            "Set it, or set SCORER=siglip."
+            "Set it, or set VLM_PROVIDER=anthropic with ANTHROPIC_API_KEY."
         )
 
     try:
@@ -105,11 +106,7 @@ async def health(session: AsyncSession) -> ScorerHealth:
     the other's name.
     """
     rows = await list_tags(session, include_retired=False)
-    specs = {
-        row.slug: (row.description or "").strip()
-        for row in rows
-        if (row.description or "").strip()
-    }
+    specs = prompt_module.catalog_specs(rows)
 
     model = settings().vlm_model
     return ScorerHealth(
@@ -148,7 +145,11 @@ def _parts(intake: Intake, specs: dict[str, str]) -> list[Any]:
     return parts
 
 
-async def score_frames(intake: Intake, scorer_health: ScorerHealth) -> list[dict[str, Any]]:
+async def score_frames(
+    intake: Intake,
+    scorer_health: ScorerHealth,
+    deadline_s: float | None = None,
+) -> list[dict[str, Any]]:
     """
     Score every frame in one request, returning the raw rows every scorer produces.
 
@@ -160,7 +161,7 @@ async def score_frames(intake: Intake, scorer_health: ScorerHealth) -> list[dict
 
     specs = {slug: scorer_health.specs[slug] for slug in intake.tags}
     wanted = set(specs)
-    timeout = vlm.VIDEO_TIMEOUT_S if intake.kind == "video" else vlm.IMAGE_TIMEOUT_S
+    timeout = vlm.resolve_deadline(intake.kind, deadline_s)
 
     config = types.GenerateContentConfig(
         system_instruction=prompt_module.SYSTEM,
@@ -175,6 +176,7 @@ async def score_frames(intake: Intake, scorer_health: ScorerHealth) -> list[dict
         http_options=types.HttpOptions(timeout=int(timeout * 1000)),
     )
 
+    started = time.monotonic()
     try:
         response = await client().aio.models.generate_content(
             model=scorer_health.model,
@@ -182,16 +184,38 @@ async def score_frames(intake: Intake, scorer_health: ScorerHealth) -> list[dict
             config=config,
         )
     except Exception as exc:  # noqa: BLE001 - re-raised as our own types below
-        raise _translate(exc) from exc
+        # LOG BEFORE RE-RAISING -- see the twin in vlm.score_frames. The playground renders
+        # this failure as an HTTP *200* carrying an error fragment, so until this line existed
+        # a timeout was visible only in the browser: uvicorn logged `200 OK` and nothing else
+        # anywhere recorded that the model had not answered.
+        log.warning(
+            "gemini call failed after %.1fs (deadline %.0fs) model=%s frames=%d tags=%d: "
+            "%s: %s",
+            time.monotonic() - started,
+            timeout,
+            scorer_health.model,
+            len(intake.frames),
+            len(wanted),
+            type(exc).__name__,
+            exc,
+        )
+        raise _translate(exc, timeout) from exc
 
     usage = getattr(response, "usage_metadata", None)
+    # `thoughts` is a SEPARATE counter from `out`, not a subset of it, and it is the one that
+    # moves when THINKING_LEVEL changes -- so omitting it made the only tunable on this call
+    # unmeasurable from the logs. It is also the number that decides whether a latency problem
+    # is ours (the model thinking) or the provider's (queueing), which is the question that
+    # actually came up: measured at ~150 thoughts against a 41s wall time, it was the latter.
     log.info(
-        "gemini scored %s frame(s) x %d tag(s) model=%s in=%s out=%s",
+        "gemini scored %s frame(s) x %d tag(s) model=%s in=%s thoughts=%s out=%s in %.1fs",
         len(intake.frames),
         len(wanted),
         scorer_health.model,
         getattr(usage, "prompt_token_count", "?"),
+        getattr(usage, "thoughts_token_count", "?"),
         getattr(usage, "candidates_token_count", "?"),
+        time.monotonic() - started,
     )
 
     text = getattr(response, "text", None)
@@ -217,13 +241,14 @@ async def score_frames(intake: Intake, scorer_health: ScorerHealth) -> list[dict
     return vlm._rows(reply, intake, wanted)
 
 
-def _translate(exc: Exception) -> Exception:
+def _translate(exc: Exception, deadline: float | None = None) -> Exception:
     """
     Retryable versus not, mapped onto the two types every caller already handles.
 
     Same split as `vlm._translate` and for the same reasons: only rate limiting earns a 503,
-    and a timeout is an `InferenceError` because telling a caller to retry something that will
-    time out again just moves the failure. Never a clean pass, in any branch.
+    and a timeout stays an `InferenceError` so the public API's 502 does not move under
+    dooh-backend. What changed is the MESSAGE, not the type -- see the branch below.
+    Never a clean pass, in any branch.
     """
     name = type(exc).__name__
     message = str(exc)
@@ -245,5 +270,12 @@ def _translate(exc: Exception) -> Exception:
 
     if isinstance(exc, (InferenceError, InferenceWarming)):
         return exc
+
+    # A deadline expiry, named. `httpx.ReadTimeout` stringifies to the EMPTY STRING, so the
+    # catch-all below rendered "the model call failed (ReadTimeout): " -- a bare trailing
+    # colon that named the transport class and neither the budget nor anything actionable.
+    # It stays an `InferenceError`; see vlm._translate for why the type must not move.
+    if vlm.is_timeout(exc):
+        return InferenceError(vlm.timeout_message(deadline or vlm.IMAGE_TIMEOUT_S))
 
     return InferenceError(f"the model call failed ({name}): {exc}")

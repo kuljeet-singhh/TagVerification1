@@ -1,11 +1,11 @@
 """
 The fingerprint of "how a verdict gets decided".
 
-This exists because of a real incident. profile re-decides from raw scores on every read so a
-threshold edit applies retroactively to images already analysed — and a downstream integrator
-cached our DECIDED verdicts keyed on `packs_version` alone, so the retroactivity stopped at
-the HTTP boundary and superseded refusals kept being served. `decision_version` is the value
-that lets a consumer key on the rule as well as the prompts.
+This exists because of a real incident. profile re-decides from raw answers on every read so a
+change to the rule applies retroactively to images already analysed — and a downstream
+integrator cached our DECIDED verdicts keyed on `packs_version` alone, so the retroactivity
+stopped at the HTTP boundary and superseded refusals kept being served. `decision_version` is
+the value that lets a consumer key on the rule as well as the prompts.
 
 The same incident had a second half: the server was running without `--reload`, so an edited
 banding rule never took effect and nothing anywhere said so. RULE_VERSION is read once at
@@ -52,9 +52,6 @@ def test_dict_order_is_not_a_change() -> None:
 @pytest.mark.parametrize(
     "over",
     [
-        {"threshold_low": 0.31},
-        {"threshold_high": 0.56},
-        {"sigmoid_floor": 0.006},
         {"calibrated": True},
         {"packs_version_seen": "deadbeef1234"},
         {"precision": 0.9},
@@ -64,9 +61,13 @@ def test_dict_order_is_not_a_change() -> None:
 def test_every_field_moves_it(over: dict) -> None:
     """
     Mechanically folded rather than hand-picked, so a field added later and wired into
-    `decide()` cannot silently escape the fingerprint. `precision`/`recall` do not affect a
-    verdict today; covering them costs one spare cache generation and removes a whole class
-    of future bug.
+    `decide()` cannot silently escape the fingerprint.
+
+    This is the property that survived migration 0004. The parametrize used to lead with
+    `threshold_low` / `threshold_high` / `sigmoid_floor`; those columns are gone, and the
+    mechanical fold is why their removal needed no change here beyond deleting the rows.
+    `precision`/`recall` still do not affect a verdict, and are still covered for the same
+    reason: one spare cache generation buys a whole class of future bug.
     """
     assert decision_version({"alcohol": t(**over)}) != decision_version({"alcohol": t()})
 
@@ -86,24 +87,30 @@ def test_none_does_not_collide_with_empty_string() -> None:
 
 def test_editing_the_fallback_moves_it(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    `decide()` does `t = threshold or FALLBACK`, so these defaults decide every tag with no
-    row — 19 of 20 today. A fingerprint of only the rows would call that change invisible.
+    `decide()` does `t = threshold or FALLBACK`, so the defaults answer for every tag with no
+    row — four of twenty-four today. A fingerprint of only the rows would call that invisible.
     """
     before = decision_version({"alcohol": t()})
-    monkeypatch.setattr(decide_module, "FALLBACK", Thresholds(threshold_high=0.9))
+    monkeypatch.setattr(decide_module, "FALLBACK", Thresholds(calibrated=True))
     assert decision_version({"alcohol": t()}) != before
 
 
 def test_the_fallback_key_cannot_collide_with_a_real_slug() -> None:
     """A tag literally named after the sentinel must not shadow it."""
-    assert decision_version({"\x00fallback": t(threshold_high=0.9)}) != decision_version(
+    assert decision_version({"\x00fallback": t(calibrated=True)}) != decision_version(
         {"\x00fallback": t()}
     )
 
 
 def test_it_does_not_expose_the_numbers() -> None:
-    """AGENTS.md rule 6. A digest of the thresholds is not the thresholds."""
-    version = decision_version({"alcohol": t(threshold_high=0.7818, sigmoid_floor=0.0016)})
+    """
+    AGENTS.md rule 7. A digest of the inputs is not the inputs.
+
+    Written for the thresholds, which are gone. It still earns its place: whatever replaces
+    them lands in this same mechanical fold, and a fingerprint that leaked a value back would
+    let a caller tune a creative against it.
+    """
+    version = decision_version({"alcohol": t(precision=0.7818, recall=0.0016)})
     assert "0.7818" not in version
     assert "0.0016" not in version
 

@@ -1,11 +1,13 @@
 """
 GET /api/v1/tags — the tag catalog, with a per-tag `calibrated` flag.
 
-Thresholds are deliberately NOT exposed. Publishing them would both invite gaming (a caller
-could tune a creative to sit just under a cutoff) and make them awkward to change, since
-they would become part of the public contract rather than an implementation detail.
 `calibrated` is exposed because it tells the caller how much to trust the verdict, which is
-the caller's business.
+the caller's business, and it is the ONE number here that is honest about its own limits --
+AGENTS.md rule 4. It is computed, never read raw: a calibration measured against a different
+`packs_version` is stale and reports false. See decide.effective_calibrated.
+
+There are no thresholds left to expose (migration 0004), but rule 7 stands for anything that
+replaces them: a cutoff a caller can read is a cutoff a creative can be tuned to sit under.
 """
 
 from __future__ import annotations
@@ -23,7 +25,12 @@ from tagverify.db.session import get_session
 from tagverify.errors import ApiError
 from tagverify.scoring import registry
 from tagverify.tags import catalog as catalog_mod
-from tagverify.tags.decide import cached_thresholds, decision_version
+from tagverify.tags.decide import (
+    FALLBACK,
+    cached_thresholds,
+    decision_version,
+    effective_calibrated,
+)
 
 router = APIRouter()
 
@@ -44,9 +51,9 @@ async def tags(
         {
             "packs_version": catalog.packs_version,
             # The other half of "what produced this verdict". A caller caching our answers
-            # needs both: packs_version moves when the model's numbers change, this moves
-            # when the rule or the cutoffs applied to them do. Keying a cache on only the
-            # first is how a superseded refusal outlives the fix for it.
+            # needs both: packs_version moves when the question changes, this moves when the
+            # rule that reads the answer does. Keying a cache on only the first is how a
+            # superseded refusal outlives the fix for it.
             "decision_version": decision_version(thresholds, registry.rule()),
             "count": len(catalog.tags),
             "tags": [
@@ -54,13 +61,11 @@ async def tags(
                     "slug": tag,
                     "label": rows[tag].label,
                     "description": rows[tag].description,
-                    "calibrated": bool(
-                        (row := thresholds.get(tag))
-                        and row.calibrated
-                        and (
-                            not row.packs_version_seen
-                            or row.packs_version_seen == catalog.packs_version
-                        )
+                    # Through the shared helper, not re-derived here. This comparison was
+                    # written out inline three times and the admin panel's copy disagreed with
+                    # this one for every stale calibration -- see decide.effective_calibrated.
+                    "calibrated": effective_calibrated(
+                        thresholds.get(tag) or FALLBACK, catalog.packs_version
                     ),
                 }
                 for tag in catalog.tags
@@ -80,27 +85,39 @@ async def tags(
 # alcohol means was the thing to prevent, and it still is. Scopes did not open that door, they
 # made "which key" answerable so a SECOND key could be issued for the catalog.
 #
-# NOTE ON CACHES. These handlers deliberately do NOT call reset_caches(), and that is still
-# right now that publishing no longer needs a restart. GET /tags above is served from the
-# model tier's catalog, built from the pack the model currently holds. A row written here
-# cannot appear there until the pack is PUSHED — writing to content_tags does not publish
-# anything — so at this point there is still no stale cache to clear, and clearing one would
-# imply an immediacy the write does not have. `pending publish` on the response tells the
-# truth.
+# NOTE ON CACHES. These handlers still call no invalidation, but the REASON has inverted and
+# it is worth being explicit, because the old reason is the sort that outlives its mechanism.
+# It used to be that a write could not reach the model until the pack was pushed, so there was
+# nothing yet to invalidate. Now there is no pack: `scoring/gemini.py:health` re-reads
+# content_tags on every request and rebuilds `packs_version` from it, so a row written here is
+# live at the next call and no memo holds a stale catalog to clear.
 #
-# The invalidation belongs to the publish, not to the write, and it lives there:
-# scoring.client.push_packs() calls reset_caches() once the model confirms the swap. Doing it
-# here as well would clear the memos at the moment nothing changed and leave them warm at the
-# moment everything did.
+# What that leaves is `pending_publish: True` on these responses, which is now a formality —
+# there is no publish step for it to be pending. It is still emitted because dooh-backend
+# reads it (`content-verification/client.ts` toWriteResult), and flipping it is a change to
+# what that admin UI tells its user, not a cleanup to make in passing.
 
 
 class TagPayload(BaseModel):
+    """
+    A tag as a caller may write it: a name, and the sentence the model is asked.
+
+    The NAME is the required half, because it is the only half the model sees.
+
+    `positives`, `negatives`, `rationale` and `sigmoid_floor` went with migration 0003. They
+    are not rejected, they are IGNORED -- pydantic drops unknown fields by default, which is
+    deliberate here: dooh-backend still sends all four (`content-verification/client.ts`
+    toWirePayload), and a 422 would break its tag admin over data nothing has read since
+    SigLIP was removed. It can drop them on its own schedule.
+    """
+
     label: str
-    description: str
-    positives: list[str]
-    negatives: list[str]
-    rationale: str | None = None
-    sigmoid_floor: float | None = None
+    #: Optional, matching the admin form. It is not sent to the model and a screen owner's
+    #: picker renders nothing when it is blank, so there is nothing to refuse a write over.
+    #: All three layers agree on this now -- dooh-backend dropped the @MinLength(1) it used to
+    #: carry here (`content-tag.dto.ts`), and its admin form no longer marks the field required.
+    #: There is no divergence left to go looking for.
+    description: str = ""
 
 
 class CreateTagPayload(TagPayload):
@@ -112,10 +129,6 @@ def _tag_json(row: ContentTag) -> dict[str, Any]:
         "slug": row.slug,
         "label": row.label,
         "description": row.description,
-        "positives": row.positives,
-        "negatives": row.negatives,
-        "rationale": row.rationale,
-        "sigmoid_floor": row.sigmoid_floor,
         "status": row.status,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         "updated_by": row.updated_by,
@@ -127,7 +140,7 @@ async def managed_tags(
     session: AsyncSession = Depends(get_session),
 ) -> JSONResponse:
     """
-    The catalog as stored, prompts included. Not the same thing as GET /tags.
+    The catalog as stored, retired rows included. Not the same thing as GET /tags.
 
     Each row carries `publish_state`, because a row here is a database row and nothing more
     until someone publishes it. Without it a caller cannot tell a tag the model is scoring

@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from jinja2 import TemplateSyntaxError
 
 from tagverify import templating
 
@@ -100,9 +101,9 @@ def test_a_missing_asset_degrades_instead_of_raising(static_dir: Path) -> None:
 # ------------------------------------------------------- the verdict card branches
 
 
-def _card(decided_by: str, band: str, present: bool | None, sigmoid: float) -> str:
+def _card(decided_by: str, band: str, present: bool | None) -> str:
     """Render partials/verdict_card.html for one verdict."""
-    from tagverify.tags.decide import Evidence, Thresholds, Verdict
+    from tagverify.tags.decide import Evidence, Verdict
 
     verdict = Verdict(
         tag="gambling",
@@ -114,23 +115,88 @@ def _card(decided_by: str, band: str, present: bool | None, sigmoid: float) -> s
         band=band,
         evidence=Evidence(
             top_phrase="a sports betting app on a phone screen",
-            crop=[0.0, 0.0, 1.0, 1.0],
-            sigmoid=sigmoid,
+            crop=None,
+            sigmoid=None,
         ),
     )
     template = templating.templates.env.get_template("partials/verdict_card.html")
-    return template.render(
-        verdict=verdict,
-        result=type("R", (), {"thresholds": {"gambling": Thresholds()}})(),
-    )
+    return template.render(verdict=verdict)
 
 
-def test_a_vetoed_card_still_explains_the_veto() -> None:
-    """The existing branch must survive the new one."""
-    html = _card("sigmoid_floor", "absent", False, 0.0045)
+def test_a_card_never_draws_a_threshold_ruler() -> None:
+    """
+    THE ONE THING THIS INTERFACE MUST NOT DO.
 
-    assert "Vetoed by the absolute-resemblance floor." in html
-    assert "Clears the floor" not in html
-    # A vetoed verdict gets the explanation INSTEAD of the ruler — a 0.94 bar labelled
-    # "absent" reads as a bug.
-    assert 'class="ruler"' not in html
+    `score` is the model's own reported certainty, not a similarity, and nothing is compared
+    against a cutoff -- migration 0004 removed the last of them. Placing that number on an
+    absent/uncertain/present ruler would draw a measurement that never happened.
+
+    Parametrised over a stored `decided_by` this build no longer writes: `creative_tag_analyses`
+    still holds rows stamped "siglip" and "sigmoid_floor", and rendering one must not resurrect
+    the ruler branch that used to serve them.
+    """
+    for decided_by in ("vlm", "siglip", "sigmoid_floor"):
+        html = _card(decided_by, "absent", False)
+        assert 'class="ruler"' not in html, decided_by
+        assert "Vetoed by the absolute-resemblance floor." not in html, decided_by
+        # The "Read, not ranked." box is gone too. It was the `{% if read %}` branch of the
+        # three above, and it outlived the other two by losing its guard rather than by
+        # earning its place — printing on every card an explanation of why a ruler no reader
+        # had ever seen was missing.
+        assert "Read, not ranked." not in html, decided_by
+
+
+def test_a_card_reports_an_uncertain_verdict_as_needing_review() -> None:
+    """
+    `present: null` is uncertain, never false — AGENTS.md rule 1, at the last surface.
+
+    That surface used to be the word "not sure" inside the "Read, not ranked." box. It is now
+    the band chip, which is the stronger place for it: templating.BANDS calls it "Needs
+    review" precisely because that STATES THE REQUIRED ACTION, where a bare "uncertain" left
+    the reader to work out that `present: null` is a task and not a middle value.
+    """
+    html = _card("vlm", "uncertain", None)
+    assert "Needs review" in html
+    assert "uncalibrated" in html
+    # And it must never be dressed as a cleared verdict.
+    assert "Absent" not in html
+    assert "This content was not found." not in html
+
+
+def test_an_uncertain_card_does_not_blame_a_threshold_that_does_not_exist() -> None:
+    """
+    The note on an uncertain card is now the ONLY explanation on it, so it has to be true.
+
+    It read "The score fell between the thresholds" until the box above it was removed —
+    describing a mechanism migration 0004 deleted, on the one card where a reviewer is being
+    asked to act.
+    """
+    html = _card("vlm", "uncertain", None)
+    assert "threshold" not in html.lower()
+    assert "could not tell" in html
+
+
+# ------------------------------------------------------- every template parses
+
+
+def test_every_template_compiles() -> None:
+    """
+    A template that cannot PARSE is a hard 500 that no handler can soften — the exception is
+    raised while compiling, before a single byte of HTML exists, so the `try/except` a page
+    wraps its own data fetching in never sees it.
+
+    That is exactly how `/docs` broke: a comment reading `// the model's confidence` was added
+    inside the single-quoted Jinja literal holding the example JSON response, and the
+    apostrophe closed the literal early. Nothing in the suite touched the page, so `make check`
+    stayed green and only a browser said otherwise.
+
+    Compiling is not rendering: no context is needed, so this covers every template in the
+    package for the cost of a parse.
+    """
+    env = templating.templates.env
+    for path in sorted(templating.TEMPLATE_DIR.rglob("*.html")):
+        name = str(path.relative_to(templating.TEMPLATE_DIR))
+        try:
+            env.get_template(name)
+        except TemplateSyntaxError as exc:  # pragma: no cover - the failure path
+            pytest.fail(f"{name}:{exc.lineno} does not parse: {exc.message}")

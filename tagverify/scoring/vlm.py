@@ -1,10 +1,12 @@
 """
 The ONLY module that knows a vision language model is answering.
 
-Counterpart to `scoring/client.py`, which is the only module that knows about the Gradio
-Space. Everything else calls `health()` and `score_frames()` and gets the same raw rows back
-either way -- which is what keeps `analyze/run.py`, `analyze/aggregate.py`, the result cache,
-the audit row and the public response shape identical across the swap.
+It was written as the counterpart to a `scoring/client.py` that knew about the Gradio Space;
+that module is gone with the ranking model, and this containment is what survived it.
+Everything else calls `health()` and `score_frames()` and gets the same raw rows back from any
+scorer -- which is what kept `analyze/run.py`, `analyze/aggregate.py`, the result cache, the
+audit row and the public response shape identical across the swap, and what keeps `gemini.py`
+and `fake.py` interchangeable with this one now.
 
 WHY THE ANSWER IS DIFFERENT IN KIND
 -----------------------------------
@@ -23,7 +25,7 @@ artefact the accuracy of this whole path rests on, and they are fingerprinted in
 
 WHAT IT RAISES, AND WHY THOSE TYPES
 -----------------------------------
-`InferenceWarming` and `InferenceError`, imported from `scoring/client.py`. They are not
+`InferenceWarming` and `InferenceError`, imported from `scoring/base.py`. They are not
 Gradio concepts -- they mean "retry, this is expected" and "the scorer failed" -- and every
 caller in the codebase already translates them into the right HTTP status, playground message
 and admin banner. Reusing them means the API tier needs no change at all.
@@ -40,6 +42,7 @@ import binascii
 import contextlib
 import json
 import logging
+import time
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
@@ -56,12 +59,94 @@ log = logging.getLogger(__name__)
 
 # -------------------------------------------------------------------- plumbing
 
-#: A still shares dooh-backend's 7s batch deadline with every other file in the upload, so a
-#: long wait here is time the caller has already given up on. Video gets its own, larger
-#: budget upstream (VIDEO_BATCH_DEADLINE_MS = 35s) and legitimately needs it: six frames go in
-#: one request. Both sit under analyze/run.py's TOTAL_BUDGET_S.
-IMAGE_TIMEOUT_S = 12.0
-VIDEO_TIMEOUT_S = 28.0
+#: THE DEFAULT, not the only value -- `resolve_deadline` below lets a caller pass its own.
+#:
+#: SIZED AGAINST THE MODEL, NOT AGAINST THE CALLER. These used to be 12s/28s, justified by
+#: dooh-backend abandoning a still at 7s (BATCH_DEADLINE_MS) and 10s (ANALYZE_TIMEOUT_MS) --
+#: "a longer wait here is time nobody is waiting for". That reasoning inverted the dependency
+#: and the result was a gate that never gated: measured latency for a 24-tag still on this
+#: catalog ran 8.0s to 37.0s (median ~13s), so EVERY uncached upload analysis was abandoned by
+#: one side or the other, dooh-backend recorded NOT_VERIFIED, and its policy turned that into
+#: "flag for review" -- an upload that was never checked being accepted onto a screen that
+#: blocks the very tag the creative contains.
+#:
+#: So the ceiling now sits above the model's own spread and dooh-backend's budgets were raised
+#: to match (PER_IMAGE_BUDGET_MS / ANALYZE_TIMEOUT_MS there). A deadline shorter than the thing
+#: it is waiting for is not a budget, it is a guaranteed timeout.
+#:
+#: Video is six frames in one request and gets proportionally more.
+#: (An earlier comment here claimed both sat under a `TOTAL_BUDGET_S` in analyze/run.py. No
+#: such constant has ever existed; there is no overall wall-clock budget.)
+IMAGE_TIMEOUT_S = 40.0
+VIDEO_TIMEOUT_S = 60.0
+
+#: What the playground asks for. A person is watching this one and will wait, and nothing
+#: upstream aborts. Measured latency on a free-tier Gemini key ran 6.9s to 41.2s for an
+#: IDENTICAL request, which is the spread this has to sit above -- see docs/VLM_SCORING.md 5.4.
+#: It stays a separate number from IMAGE_TIMEOUT_S even though the two are now close: they
+#: answer to different people, and the API's is the one that moves when a caller's budget does.
+INTERACTIVE_TIMEOUT_S = 45.0
+
+
+def resolve_deadline(kind: str, deadline_s: float | None) -> float:
+    """
+    Seconds this scoring call gets, given the media kind and what the caller asked for.
+
+    ONE function, used by both providers, because the two were already copying the same
+    conditional (`vlm.py` and `gemini.py` each had their own) and a deadline that differs by
+    provider is a difference nobody intends. `None` means "use the API-shaped default", which
+    is what every caller got before this parameter existed.
+    """
+    if deadline_s is not None and deadline_s > 0:
+        return float(deadline_s)
+    return VIDEO_TIMEOUT_S if kind == "video" else IMAGE_TIMEOUT_S
+
+
+#: Exception TYPE NAMES that mean "the deadline expired", matched by name rather than by
+#: import. httpx is a transitive dependency of both SDKs and asyncio's TimeoutError is
+#: builtins.TimeoutError on 3.11+, so a name check covers every provider without this module
+#: importing either SDK's transport layer. `is_timeout` also walks `__cause__`, because
+#: google-genai wraps the httpx error before it reaches us.
+_TIMEOUT_NAMES = frozenset(
+    {
+        "ReadTimeout",
+        "ConnectTimeout",
+        "WriteTimeout",
+        "PoolTimeout",
+        "TimeoutException",
+        "TimeoutError",
+        "APITimeoutError",
+        "DeadlineExceeded",
+    }
+)
+
+
+def is_timeout(exc: BaseException) -> bool:
+    """True if `exc`, or anything it was raised from, is a deadline expiry."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if type(current).__name__ in _TIMEOUT_NAMES:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def timeout_message(deadline: float) -> str:
+    """
+    What the user reads when the model did not answer in time.
+
+    Written out because the obvious version is unreadable: `httpx.ReadTimeout` stringifies to
+    the EMPTY STRING, so the catch-all below rendered "the model call failed (ReadTimeout): "
+    -- a bare trailing colon, naming the transport class and neither the budget nor anything
+    the reader can act on.
+    """
+    return (
+        f"the model did not answer within {deadline:.0f}s. This is a provider latency "
+        "problem, not a problem with the creative -- try again"
+    )
+
 
 #: A cap, not a target -- raising it costs nothing when the reply is short. Six frames times
 #: twenty tags of JSON is already ~5k tokens before any thinking, and a truncated reply is a
@@ -120,7 +205,8 @@ def client() -> Any:
     key = (settings().anthropic_api_key or "").strip()
     if not key:
         raise InferenceError(
-            "SCORER=vlm but ANTHROPIC_API_KEY is not set. Set it, or set SCORER=siglip."
+            "SCORER=vlm but ANTHROPIC_API_KEY is not set. Set it, set VLM_PROVIDER=gemini\n"
+            "with GEMINI_API_KEY, or set SCORER=fake."
         )
 
     try:
@@ -184,11 +270,7 @@ async def health(session: AsyncSession) -> ScorerHealth:
     silently revert the catalog.
     """
     rows = await list_tags(session, include_retired=False)
-    specs = {
-        row.slug: (row.description or "").strip()
-        for row in rows
-        if (row.description or "").strip()
-    }
+    specs = prompt_module.catalog_specs(rows)
 
     model = settings().vlm_model
     return ScorerHealth(
@@ -278,7 +360,11 @@ def _rows(reply: _Reply, intake: Intake, wanted: set[str]) -> list[dict[str, Any
     return rows
 
 
-async def score_frames(intake: Intake, scorer_health: ScorerHealth) -> list[dict[str, Any]]:
+async def score_frames(
+    intake: Intake,
+    scorer_health: ScorerHealth,
+    deadline_s: float | None = None,
+) -> list[dict[str, Any]]:
     """
     Score every frame of a creative in ONE request.
 
@@ -302,8 +388,9 @@ async def score_frames(intake: Intake, scorer_health: ScorerHealth) -> list[dict
         {"type": "text", "text": prompt_module.render_question(specs, len(intake.frames))}
     )
 
-    timeout = VIDEO_TIMEOUT_S if intake.kind == "video" else IMAGE_TIMEOUT_S
+    timeout = resolve_deadline(intake.kind, deadline_s)
 
+    started = time.monotonic()
     try:
         response = await client().with_options(timeout=timeout).messages.create(
             model=scorer_health.model,
@@ -317,7 +404,22 @@ async def score_frames(intake: Intake, scorer_health: ScorerHealth) -> list[dict
             },
         )
     except Exception as exc:  # noqa: BLE001 - re-raised as our own types below
-        raise _translate(exc) from exc
+        # LOG BEFORE RE-RAISING. Every caller of this function turns the exception into a
+        # message for a human -- and the playground turns it into an HTTP *200* carrying an
+        # error fragment, so without this line a failed analysis left no server-side trace at
+        # all beyond uvicorn's `200 OK`. A failure rate nobody can see is a failure rate
+        # nobody manages.
+        log.warning(
+            "vlm call failed after %.1fs (deadline %.0fs) model=%s frames=%d tags=%d: %s: %s",
+            time.monotonic() - started,
+            timeout,
+            scorer_health.model,
+            len(intake.frames),
+            len(wanted),
+            type(exc).__name__,
+            exc,
+        )
+        raise _translate(exc, timeout) from exc
 
     # Billed from the first call, not from the first surprise. docs/VLM_SCORING.md 7 is an
     # estimate; this is what makes the monthly figure a measurement.
@@ -356,7 +458,7 @@ async def score_frames(intake: Intake, scorer_health: ScorerHealth) -> list[dict
     return _rows(reply, intake, wanted)
 
 
-def _translate(exc: Exception) -> Exception:
+def _translate(exc: Exception, deadline: float | None = None) -> Exception:
     """
     Map an SDK failure onto the two error types the rest of the codebase already handles.
 
@@ -368,6 +470,12 @@ def _translate(exc: Exception) -> Exception:
       API is not a warm-up, and telling a caller to retry something that will time out again
       just moves the failure. dooh-backend turns a 502 into a review flag, which is the
       honest outcome.
+
+    A TIMEOUT STAYS AN `InferenceError`, and that is deliberate. It now carries a message that
+    names the budget instead of a bare `ReadTimeout`, but the TYPE does not move: promoting it
+    to `InferenceWarming` would turn the public API's 502 into a 503 with `Retry-After`, and
+    dooh-backend reads that difference. The playground surfaces its own Retry button off
+    `is_timeout` instead -- a UI affordance, not a contract change.
 
     Never a clean pass, in any branch.
     """
@@ -383,5 +491,8 @@ def _translate(exc: Exception) -> Exception:
 
     if isinstance(exc, (InferenceError, InferenceWarming)):
         return exc
+
+    if is_timeout(exc):
+        return InferenceError(timeout_message(deadline or IMAGE_TIMEOUT_S))
 
     return InferenceError(f"the model call failed ({name}): {exc}")

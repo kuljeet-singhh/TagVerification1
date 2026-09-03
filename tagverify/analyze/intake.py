@@ -51,10 +51,14 @@ log = logging.getLogger(__name__)
 # approaching this is an API caller that skipped that step — which we now handle for them.
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
-# SigLIP consumes 224x224 tiles and we score the full image plus 9 half-size crops, so
-# detail beyond 768px on the longest edge is thrown away by the model regardless. Downscaling
-# server-side gives API callers the same benefit the browser client already gives itself, and
-# keeps the base64 payload to the Space small.
+# 768px on the longest edge is what the model is shown, so detail beyond it is discarded
+# either way -- and a 4K creative drops from ~8MB to ~150KB before it crosses the wire.
+# Downscaling server-side gives API callers the same benefit the browser client already gives
+# itself, and keeps the payload to the provider small, which is billed by the token.
+#
+# The number predates the VLM: it was set because SigLIP consumed 224x224 tiles and scored the
+# full image plus nine half-size crops. It survived the change on its own merits, so do not
+# read it as a leftover -- /docs documents 768 as the recommended edge for callers.
 MAX_EDGE = 768
 JPEG_QUALITY = 90
 

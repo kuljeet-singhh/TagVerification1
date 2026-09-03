@@ -1,12 +1,16 @@
 """
-The inference service: a SigLIP 2 tag detector deployed to a Hugging Face Space.
+Data only. No code runs from here.
 
-This directory is git-subtree-pushed to the Space and runs FLAT there (app.py, detector.py
-and banding.py sit side by side, imported without a package). This __init__.py exists only so
-the web application in dooh/ can `from inference.banding import band_of` — sharing the one
-piece of logic that must never diverge between the two.
+This directory held the inference tier: a SigLIP 2 detector deployed to a Hugging Face Space,
+git-subtree-pushed and run flat there. All of it was removed once a model that reads its prompt
+per request made the Space, the phrase packs and the publish step between them unnecessary. The
+detector is preserved on `main`.
 
-Keep this file free of imports. Importing detector.py from here would drag torch and
-transformers into the web application's startup path, which is exactly what the split is
-meant to avoid.
+What is left is the measurements, which outlive the code that produced them: `eval/` is the
+labelled corpus `dooh gate` scores against, `gate_cache.json` banks the SigLIP baseline the
+removal was judged against, and `phrase_packs_archive.json` holds the packs themselves, dumped
+the moment before migration 0003 dropped their columns.
+
+This file exists only so `inference` remains an installable package — pyproject declares
+`inference*` under packages.find. Keep it free of imports.
 """

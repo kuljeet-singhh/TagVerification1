@@ -125,7 +125,9 @@ async def test_login_throttles_repeated_failures(client) -> None:
     [
         ("post", "/admin/keys", {"name": "sneaky", "rate_limit": 60}),
         ("post", "/admin/keys/some-id/revoke", {}),
-        ("post", "/admin/thresholds/alcohol", {"low": 0.1, "high": 0.9, "floor": 0.005}),
+        ("post", "/admin/tags", {"label": "Sneaky", "description": "d"}),
+        ("post", "/admin/tags/alcohol/retire", {}),
+        ("post", "/admin/tags/alcohol/restore", {}),
     ],
 )
 async def test_mutations_reject_an_unauthenticated_caller(client, method, path, payload) -> None:
@@ -152,32 +154,30 @@ async def test_mutations_reject_a_missing_csrf_token(client, admin_password: str
 
 
 @needs_db
-async def test_threshold_save_refuses_an_inverted_band(client, admin_password: str) -> None:
+async def test_the_calibration_tab_is_gone(client, admin_password: str) -> None:
     """
-    low > high would make a score satisfy both "absent" and "present", leaving the ORDER of
-    the checks in banding.py to silently decide the verdict.
+    It reported a constant, so it went.
+
+    Nothing could write `tag_thresholds` -- `inference/calibrate.py` and
+    `dooh apply-calibration` went with the ranking model -- so the panel showed 0 of 25
+    measured and could show nothing else. THE RULE IT DISPLAYED IS UNTOUCHED: `calibrated`
+    is still on every API response and every verdict card, which is where AGENTS.md rule 4
+    actually bites. See tests/test_calibration.py.
+
+    The stale-bookmark case is the second half. `?tab=calibration` is no longer in
+    `ADMIN_TABS`, so admin.py falls it back to keys rather than rendering a page with every
+    panel hidden -- which is what an unrecognised tab used to do.
     """
-    response = await client.post(
-        "/admin/thresholds/alcohol",
-        data={"low": 0.9, "high": 0.1, "floor": 0.005},
-        cookies={admin.COOKIE: forge(str(now_ms()), admin_password)},
-        headers={"x-csrf-token": admin.csrf_token()},
-    )
-    assert response.status_code == 200
-    assert "low must not be greater than high." in response.text
-
-
-@needs_db
-@pytest.mark.parametrize("field", ["low", "high", "floor"])
-async def test_threshold_save_refuses_out_of_range(client, admin_password: str, field: str) -> None:
-    payload = {"low": 0.2, "high": 0.8, "floor": 0.005} | {field: 1.5}
-    response = await client.post(
-        "/admin/thresholds/alcohol",
-        data=payload,
-        cookies={admin.COOKIE: forge(str(now_ms()), admin_password)},
-        headers={"x-csrf-token": admin.csrf_token()},
-    )
-    assert f"{field} must be between 0 and 1." in response.text
+    for url in ("/admin", "/admin?tab=calibration"):
+        page = await client.get(
+            url, cookies={admin.COOKIE: forge(str(now_ms()), admin_password)}
+        )
+        assert page.status_code == 200, url
+        assert 'id="panel-calibration"' not in page.text, url
+        assert 'data-tab="calibration"' not in page.text, url
+        # Fell back to a VISIBLE panel rather than rendering every one of them hidden:
+        # the keys div carries no `hidden` attribute only when keys is the selected tab.
+        assert '<div id="panel-keys" role="tabpanel" >' in page.text, url
 
 
 @needs_db

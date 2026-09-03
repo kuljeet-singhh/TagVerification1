@@ -1,10 +1,10 @@
 """
 The VLM scorer: what it must never do.
 
-`test_banding.py` is the highest-value file in this repo because it guards how a SigLIP score
-becomes a verdict. This is its counterpart for the path where there is no score to band — the
-model answers directly, so the guarantees have to be enforced at the boundary where its reply
-is parsed rather than in a threshold rule.
+There is no score to band any more — the model answers the question directly — so every
+guarantee that used to be enforced by a threshold rule is now enforced at the boundary where
+the model's reply is parsed. That boundary is this file's subject. (`test_banding.py` held
+this role and was deleted with the rule it guarded; `test_aggregate.py` inherited the title.)
 
 Every test here is about a way a wrong answer could be presented as a confident one. None of
 them need a network, a key or a database.
@@ -26,9 +26,12 @@ from tagverify.scoring.base import InferenceError, InferenceWarming, ScorerHealt
 from tagverify.tags.decide import Thresholds, decide, decide_all, decision_version
 from tests.support.videos import encode
 
+#: slug -> what the model is told to look for, which is the tag's NAME. Shaped like the real
+#: thing on purpose: descriptions used to fill this map and a fixture that still looked like
+#: one would quietly document the wrong column.
 SPECS = {
-    "alcohol": "Beer, wine, spirits, cocktails, bars, or drinking of alcohol.",
-    "vaping": "E-cigarettes, vape pens, vape juice.",
+    "alcohol": "Alcoholic content",
+    "vaping": "Vaping and e-cigarettes",
 }
 HEALTH = ScorerHealth(
     tags=sorted(SPECS), packs_version="p123456789ab", model="claude-opus-5", specs=SPECS
@@ -376,16 +379,67 @@ def test_the_prompt_and_the_bands_are_inside_the_vlm_fingerprint() -> None:
     assert base != decision_version(thresholds)
 
 
-def test_editing_a_tag_description_moves_the_catalog_fingerprint() -> None:
+def test_renaming_a_tag_moves_the_catalog_fingerprint() -> None:
     """
-    `packs_version`'s replacement keeps its job: it is half the cache key, so a reworded tag
-    must not keep serving verdicts decided against the old wording.
+    `packs_version`'s replacement keeps its job: it is half the cache key, so a renamed tag
+    must not keep serving verdicts decided under its old name.
     """
-    before = prompt_module.catalog_fingerprint("claude-opus-5", {"alcohol": "Beer and wine."})
-    after = prompt_module.catalog_fingerprint("claude-opus-5", {"alcohol": "Beer, wine, gin."})
+    before = prompt_module.catalog_fingerprint("claude-opus-5", {"alcohol": "Alcoholic content"})
+    after = prompt_module.catalog_fingerprint("claude-opus-5", {"alcohol": "Alcohol and bars"})
     assert before != after
     # ...and the model is part of it, because a different reader gives different answers.
-    assert before != prompt_module.catalog_fingerprint("other-model", {"alcohol": "Beer and wine."})
+    assert before != prompt_module.catalog_fingerprint(
+        "other-model", {"alcohol": "Alcoholic content"}
+    )
+
+
+class _Row:
+    """The two attributes `catalog_specs` reads. A ContentTag without a database."""
+
+    def __init__(self, slug: str, label: str, description: str = "") -> None:
+        self.slug, self.label, self.description = slug, label, description
+
+
+def test_the_spec_map_is_built_from_the_name() -> None:
+    """
+    THE CHANGE, stated once. The model is told the tag's name and nothing else about it.
+
+    Asserting on the description's ABSENCE is the load-bearing half: it is still a column, still
+    returned by /api/v1/tags and still shown to screen owners, so nothing else would notice it
+    creeping back into the question.
+    """
+    specs = prompt_module.catalog_specs(
+        [_Row("alcohol", "Alcoholic content", "Beer, wine, spirits, cocktails, bars.")]
+    )
+    assert specs == {"alcohol": "Alcoholic content"}
+
+
+def test_editing_a_description_moves_nothing() -> None:
+    """
+    The other side of the same coin, and the reason it earns a test of its own.
+
+    A description edit used to re-key every cached verdict for that catalog. It must not now:
+    re-scoring a whole backlog because someone improved a sentence a screen owner reads would
+    be an expensive lie about what changed.
+    """
+    row = _Row("alcohol", "Alcoholic content", "Beer, wine and spirits.")
+    reworded = _Row("alcohol", "Alcoholic content", "Anything alcoholic, including bar scenes.")
+    fingerprint = prompt_module.catalog_fingerprint
+    assert fingerprint("m", prompt_module.catalog_specs([row])) == fingerprint(
+        "m", prompt_module.catalog_specs([reworded])
+    )
+
+
+def test_a_tag_with_no_description_is_still_asked_about() -> None:
+    """
+    The filter that used to live in three copies of this map, removed.
+
+    Each scorer skipped rows whose description was blank, so a tag saved without one vanished
+    from the catalog and was never scored -- silently, with no message anywhere. Keyed on the
+    name, which validate_tag requires, every active tag is always in the question.
+    """
+    specs = prompt_module.catalog_specs([_Row("dog", "Dogs and puppies", "")])
+    assert specs == {"dog": "Dogs and puppies"}
 
 
 def test_the_catalog_fingerprint_is_stable_across_dict_order() -> None:
@@ -632,3 +686,142 @@ def test_switching_provider_re_keys_the_cache() -> None:
 
 
 
+
+
+# ---------------------------------------------- the deadline, and how a timeout reads
+#
+# These cover the change made after a playground upload rendered
+#
+#     Inference failed: the model call failed (ReadTimeout):
+#
+# with a bare trailing colon and no Retry button, while the server logged nothing but
+# `200 OK`. The timeout itself was real -- measured latency for one UNCHANGED request against
+# gemini-3.6-flash ran 6.9s / 17.6s / 41.2s -- so the fix is a caller-owned deadline and an
+# error a person can act on, not a bigger constant.
+
+
+class _Timeout(Exception):
+    """Stands in for httpx.ReadTimeout, whose defining property is the one that matters here."""
+
+    __name__ = "ReadTimeout"
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return ""
+
+
+def test_a_read_timeout_names_the_budget_instead_of_the_transport_class() -> None:
+    """
+    httpx.ReadTimeout stringifies to the EMPTY STRING.
+
+    The catch-all rendered "the model call failed (ReadTimeout): " -- a bare trailing colon
+    naming the transport class and neither the budget nor anything the reader can do. This is
+    the assertion that stops that regressing.
+    """
+    import httpx
+
+    for exc in (httpx.ReadTimeout(""), TimeoutError()):
+        for translate in (vlm._translate, _gemini_translate()):
+            message = str(translate(exc, 45.0))
+            assert "45s" in message
+            assert "ReadTimeout" not in message
+            assert not message.rstrip().endswith(":")
+
+
+def _gemini_translate() -> Any:
+    from tagverify.scoring import gemini
+
+    return gemini._translate
+
+
+def test_a_timeout_stays_a_502_and_does_not_become_a_503() -> None:
+    """
+    The MESSAGE moved; the TYPE must not.
+
+    `InferenceWarming` is 503 + Retry-After and dooh-backend reads that difference, so
+    promoting a timeout would change the public API contract. The playground gets its Retry
+    button from `is_timeout` instead — a UI affordance, not a contract change.
+    """
+    import httpx
+
+    assert isinstance(vlm._translate(httpx.ReadTimeout(""), 12.0), InferenceError)
+    assert not isinstance(vlm._translate(httpx.ReadTimeout(""), 12.0), InferenceWarming)
+
+
+def test_is_timeout_sees_through_the_wrapping() -> None:
+    """
+    google-genai wraps the transport error before it reaches us, and `score_frames` re-raises
+    its own type `from` the original — so the playground is asking about an InferenceError
+    whose CAUSE is the timeout. Matching only the outermost type would silently drop the
+    Retry button that this whole change exists to add.
+    """
+    import httpx
+
+    assert vlm.is_timeout(httpx.ReadTimeout(""))
+    assert not vlm.is_timeout(ValueError("something else"))
+
+    try:
+        try:
+            raise httpx.ReadTimeout("")
+        except httpx.ReadTimeout as inner:
+            raise InferenceError("the model did not answer within 12s") from inner
+    except InferenceError as wrapped:
+        assert vlm.is_timeout(wrapped)
+
+
+@pytest.mark.parametrize(
+    "kind, asked, expected",
+    [
+        ("image", None, vlm.IMAGE_TIMEOUT_S),
+        ("video", None, vlm.VIDEO_TIMEOUT_S),
+        ("image", vlm.INTERACTIVE_TIMEOUT_S, 45.0),
+        ("video", vlm.INTERACTIVE_TIMEOUT_S, 45.0),
+        ("image", 0, vlm.IMAGE_TIMEOUT_S),
+    ],
+    ids=["api-image", "api-video", "ui-image", "ui-video", "zero-is-not-a-deadline"],
+)
+def test_the_deadline_belongs_to_the_caller(
+    kind: str, asked: float | None, expected: float
+) -> None:
+    """`None` keeps the API-shaped default; a caller who knows better says so."""
+    assert vlm.resolve_deadline(kind, asked) == expected
+
+
+async def test_the_playground_deadline_reaches_the_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The behaviour change, asserted where it actually lands: on the wire.
+
+    The playground's 45s must arrive at the SDK call, not stop at run_analysis. Both providers
+    are checked because a deadline that differs by provider is a difference nobody intends.
+    """
+    from tagverify.scoring import gemini
+
+    payload = {"frames": [_answer(0, alcohol=True, vaping=None)]}
+    built = intake.build(_jpeg(), ["alcohol", "vaping"])
+
+    seen: dict[str, Any] = {}
+    fake = _install(monkeypatch, _Response(payload))
+    monkeypatch.setattr(
+        fake, "with_options", lambda **kw: seen.update(kw) or fake, raising=False
+    )
+    await vlm.score_frames(built, HEALTH, vlm.INTERACTIVE_TIMEOUT_S)
+    assert seen["timeout"] == 45.0
+
+    fake_gemini = _install_gemini(monkeypatch, _GeminiResponse(payload))
+    await gemini.score_frames(built, HEALTH, vlm.INTERACTIVE_TIMEOUT_S)
+
+    # Milliseconds on this side, seconds on the other. That factor of a thousand is exactly
+    # the mistake gemini.py warns about, and it fails in the direction that LOOKS like it
+    # works — 45 ms would simply time out every time.
+    config = fake_gemini.aio.models.calls[-1]["config"]
+    assert config.http_options.timeout == 45000
+
+    # And the default still reaches the wire unchanged for the API path. Read from the
+    # constant, not spelled out: the literal that used to sit here (12000) went on asserting
+    # the old ceiling was correct long after it had stopped being -- it sat below the model's
+    # own measured latency, so the API path timed out on every uncached call.
+    await gemini.score_frames(built, HEALTH)
+    assert fake_gemini.aio.models.calls[-1]["config"].http_options.timeout == int(
+        vlm.IMAGE_TIMEOUT_S * 1000
+    )

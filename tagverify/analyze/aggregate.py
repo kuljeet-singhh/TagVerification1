@@ -23,35 +23,38 @@ an error.
    AGENTS.md exists precisely to stop that, and it does not stop applying because there are
    now six frames instead of one.
 
-2. The sigmoid floor is a PER-FRAME veto, applied before banding (inference/banding.py). A
-   frame can score 0.92 and still be absent because it resembles nothing at all — that is the
-   "a photo of a mountain reads as alcohol" case the veto exists for. Ranking frames by raw
-   score would let exactly those vetoed frames win, reintroducing the bug one level up where
-   the veto cannot see it.
+2. `score` is not a likelihood of presence. It is the model's confidence in its OWN answer,
+   so a frame can be confidently ABSENT at 0.95 and confidently present at 0.70. Ranking by
+   score alone would hand the video to the absent frame and clear a creative nobody cleared —
+   the same failure as (1), arrived at from the other direction.
+
+   Under SigLIP the second reason was a per-frame veto: a frame could score 0.92 and still be
+   absent because it resembled nothing at all ("a photo of a mountain reads as alcohol"). The
+   veto is gone with the ranking model, but the conclusion it forced is unchanged, and that is
+   the point of writing it down — band precedence survives the reason it was introduced for.
 
 So: band first, score only as the tie-break inside a band.
 
 WHY THE EVIDENCE IS CARRIED WHOLE
 ---------------------------------
-The winning frame's score, sigmoid, phrase and crop all travel together, never mixed with
-another frame's. This mirrors detector.py, which picks the best crop and then reports THAT
-crop's sigmoid and phrase rather than the best of each independently. A verdict assembled from
-the highest score of one frame and the highest sigmoid of another describes no frame that
-exists, and its crop would point at the wrong place.
+The winning frame's score, phrase and evidence all travel together, never mixed with another
+frame's. A verdict assembled from the highest score of one frame and the best phrase of
+another describes no frame that exists, and would point a reviewer at the wrong second of the
+video. (`crop` and `sigmoid` ride along as None: this scorer fills neither, but they are still
+in the response contract and stored rows carry values.)
 
-WHY THIS LIVES IN tagverify/ AND NOT inference/
-------------------------------------------
-banding.py had to live in inference/ because the Space cannot import from the web app. That
-constraint does not apply here: the Space only ever sees a single still and has no concept of
-a video, so this rule has exactly one caller. It is kept pure for the same reason banding.py
-is — floats and dataclasses in, a verdict out, so it can be tested exhaustively.
+WHY THIS IS KEPT PURE
+---------------------
+Floats and dataclasses in, a verdict out — no I/O, no session, no scorer. It is the one place
+a video's verdict is decided, so it is the one place worth testing exhaustively, and
+tests/test_aggregate.py does. If you change how frames combine, that file should fail.
 """
 
 from __future__ import annotations
 
 from tagverify.tags.decide import Verdict
 
-#: Higher wins. Mirrors the Band literal in inference/banding.py.
+#: Higher wins. Mirrors the Band literal in tags/decide.py.
 _PRECEDENCE: dict[str, int] = {"absent": 0, "uncertain": 1, "present": 2}
 
 

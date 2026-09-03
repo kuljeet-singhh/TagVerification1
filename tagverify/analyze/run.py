@@ -83,18 +83,24 @@ def _scorer_rule() -> str:
     return registry.rule()
 
 
-async def _score(intake: Intake, health: ScorerHealth) -> list[dict[str, Any]]:
+async def _score(
+    intake: Intake, health: ScorerHealth, deadline_s: float | None
+) -> list[dict[str, Any]]:
     """
     Seam two: raw per-tag rows, one set per frame.
 
     Both branches return the same list-of-dicts, carrying `frame_index` / `timestamp_s` for
     video only — so `aggregate.py` remains the sole owner of the collapse, the result cache
     re-aggregates a stored video correctly, and neither knows which scorer produced the rows.
+
+    `deadline_s` passes straight through: how long to wait is the CALLER's to decide, because
+    only the caller knows whether anything upstream has already given up. `None` keeps the
+    API-shaped default in scoring/vlm.py.
     """
     scorer = registry.module()
     if scorer is None:
         raise InferenceError(f"SCORER={registry.name()!r} is not a scorer this build knows.")
-    return await scorer.score_frames(intake, health)
+    return await scorer.score_frames(intake, health, deadline_s)
 
 
 @dataclass(slots=True)
@@ -142,6 +148,17 @@ async def run_analysis(
     intake: Intake,
     #: None for the internal playground; a key id for public API traffic.
     api_key_id: str | None,
+    #: How long the scoring call gets, in seconds. `None` takes scoring/vlm.py's default,
+    #: which is sized against the MODEL's measured latency spread.
+    #:
+    #: IT IS THE CALLER'S NUMBER because only the caller knows who is waiting. What it must
+    #: never be is a number shorter than the model's own spread. Both defaults used to be sized
+    #: down to dooh-backend's 7s/10s budgets on the reasoning that a longer wait was time
+    #: nobody was waiting for; a 24-tag still measures 8-37s, so the effect was that no upload
+    #: analysis ever completed, dooh-backend recorded NOT_VERIFIED, and creatives it had never
+    #: checked were accepted onto screens that block their tags. Both sides were raised
+    #: together — see IMAGE_TIMEOUT_S in scoring/vlm.py.
+    deadline_s: float | None = None,
 ) -> tuple[AnalysisOutcome, dict[str, Any] | None]:
     """
     Returns (outcome, audit_row). The caller is responsible for writing `audit_row` as a
@@ -168,7 +185,7 @@ async def run_analysis(
     if cached is not None:
         raw = cached.results
     else:
-        raw = await _score(intake, health)
+        raw = await _score(intake, health, deadline_s)
 
     # Decide EVERY frame, then collapse. Deciding first is what lets the sigmoid floor veto a
     # frame before it can win on score alone; see tagverify/analyze/aggregate.py.

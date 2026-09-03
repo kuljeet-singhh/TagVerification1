@@ -8,28 +8,22 @@
   <div class="admin-head">
     <div>
       <h1>Admin</h1>
-      <p>Issues API keys, edits the tag catalog, and edits the thresholds that decide
-         every verdict.</p>
+      <p>Issues API keys and edits the tag catalog.</p>
     </div>
     <form method="post" action="/admin/logout" class="push">
       <button class="btn btn-ghost btn-sm" type="submit">Sign out</button>
     </form>
   </div>
 
-  {# Panels behind tabs rather than stacked: a 20-row threshold table would
-     otherwise push the keys table entirely off screen. #}
+  {# Panels behind tabs rather than stacked: the tag catalog is a 25-row table with an
+     editor above it, and stacking it under the keys table pushes one or the other off
+     screen entirely. #}
   <div class="tabs segmented" role="tablist" aria-label="Admin sections">
     <button role="tab" type="button" data-tab="keys"
             aria-selected="{{ 'true' if tab == 'keys' else 'false' }}"
             aria-controls="panel-keys">
       {{ ico.icon('key', 14) }} API keys
       <span class="count tnum">{{ keys | length }}</span>
-    </button>
-    <button role="tab" type="button" data-tab="thresholds"
-            aria-selected="{{ 'true' if tab == 'thresholds' else 'false' }}"
-            aria-controls="panel-thresholds">
-      {{ ico.icon('sliders', 14) }} Thresholds
-      <span class="count tnum">{{ thresholds | length }}</span>
     </button>
     <button role="tab" type="button" data-tab="tags"
             aria-selected="{{ 'true' if tab == 'tags' else 'false' }}"
@@ -43,10 +37,6 @@
     {% include "partials/keys_panel.html" %}
   </div>
 
-  <div id="panel-thresholds" role="tabpanel" {% if tab != 'thresholds' %}hidden{% endif %}>
-    {% include "partials/thresholds_panel.html" %}
-  </div>
-
   <div id="panel-tags" role="tabpanel" {% if tab != 'tags' %}hidden{% endif %}>
     {% include "partials/tags_panel.html" %}
   </div>
@@ -56,13 +46,13 @@
 {% block scripts %}
 <script>
 /* Derived from the tab strip rather than naming each panel: this hardcoded
-   panel-keys and panel-thresholds, so adding a third tab silently left the old
-   one visible underneath it.
+   panel-keys and panel-thresholds, so adding a tab silently left the old one visible
+   underneath it -- and it is why REMOVING the calibration tab needed no change here.
 
    This handler only runs on click. The FIRST paint is the Jinja above, which is a
    separate copy of the same rule -- fixing only this half is how ?tab=tags came to
    render the keys panel and the tags panel stacked together. Every tab and every
-   panel up there tests its own name; keep it that way when a fourth tab lands. */
+   panel up there tests its own name; keep it that way when a third tab lands. */
 const tabs = [...document.querySelectorAll("[data-tab]")];
 tabs.forEach((tab) => {
   tab.addEventListener("click", () => {
@@ -74,64 +64,45 @@ tabs.forEach((tab) => {
   });
 });
 
-/* Live band preview while typing, so an invalid low > high is visible before
-   you press Save and the three numbers are legible as a picture. */
-function paintRuler(row) {
-  const low = parseFloat(row.querySelector('[name="low"]').value) || 0;
-  const high = parseFloat(row.querySelector('[name="high"]').value) || 0;
-  const bar = row.querySelector(".ruler");
-  if (!bar) return;
-  const invalid = low > high;
-  bar.querySelector(".ruler-absent").style.width = `${Math.min(low, 1) * 100}%`;
-  bar.querySelector(".ruler-uncertain").style.left = `${Math.min(low, 1) * 100}%`;
-  bar.querySelector(".ruler-uncertain").style.width =
-    `${Math.max(0, Math.min(high, 1) - Math.min(low, 1)) * 100}%`;
-  bar.querySelector(".ruler-present").style.left = `${Math.min(high, 1) * 100}%`;
-  bar.querySelector(".ruler-present").style.width = `${Math.max(0, 1 - Math.min(high, 1)) * 100}%`;
-  bar.style.outline = invalid ? "2px solid var(--present-solid)" : "";
-  row.querySelector("button[type=submit]").disabled = invalid;
-}
-document.addEventListener("input", (event) => {
-  const row = event.target.closest("form[data-threshold-row]");
-  if (row) paintRuler(row);
+/* Reveal the identifier override. CONTAINS NO TRANSFORM, and that is the whole point.
+
+   This used to hold a JavaScript slugify() that raced the server's SLUG_RE. There were two
+   such copies -- one here, one in DOOH's tag dialog -- and neither was authoritative, because
+   the server only ever validated the result. catalog.slugify() is the single implementation
+   now and the "Saved as ..." line is rendered BY IT over HTMX, so the preview cannot disagree
+   with what the save writes. All this does is show the field and seed it from that preview.
+
+   Seeding matters: the override starts EMPTY, because empty is what tells the server to
+   derive. Revealing it with nothing in it would look like the identifier had been cleared.
+
+   Delegated on document rather than bound to the button, because the whole panel is replaced
+   by hx-swap="outerHTML" -- a direct binding would be dead after the first rejection, which
+   is exactly when this field matters most. */
+document.addEventListener("click", (event) => {
+  if (event.target.id !== "tag-slug-edit") return;
+
+  const line = document.getElementById("tag-slug-line");
+  const box = document.getElementById("tag-slug-override");
+  const input = document.getElementById("tag-slug");
+  if (!line || !box || !input) return;
+
+  const derived = document.querySelector("#tag-slug-preview .mono");
+  if (!input.value) input.value = derived ? derived.textContent.trim() : "";
+
+  line.hidden = true;
+  box.hidden = false;
+  input.focus();
 });
-document.querySelectorAll("form[data-threshold-row]").forEach(paintRuler);
 
-/* Slug follows the label until someone edits the slug themselves.
-
-   A slug is a transform of the label, not a decision -- "Pet supplies" is always
-   pet_supplies -- but the field stays visible and editable because the value is
-   permanent: it is the join key for that tag's eval images and thresholds, it is
-   published to DOOH, and it is the folder name an admin creates by hand under
-   inference/eval/<slug>/. Deriving it silently would hide something they later have
-   to go and look up.
-
-   Delegated on document rather than bound to #tag-label, because the whole panel is
-   replaced by hx-swap="outerHTML" -- a direct binding would be dead after the first
-   rejection, which is exactly when the field matters most.
-
-   This is a convenience, never the validation. The server owns SLUG_RE, and a label
-   that slugifies badly ("3D printing" -> "d_printing", since the pattern needs a
-   leading letter) is why the field can still be typed into. */
-function slugify(value) {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .replace(/^[^a-z]+/, "");
-}
-
-document.addEventListener("input", (event) => {
-  const field = event.target;
-  if (field.id === "tag-slug") {
-    field.dataset.touched = "1";
-    return;
+/* Once the override is open it OWNS the identifier, so the name must stop driving it. The
+   preview keeps refreshing underneath a hidden line, which costs nothing and means closing
+   the override would show a current value again. */
+document.addEventListener("htmx:configRequest", (event) => {
+  const box = document.getElementById("tag-slug-override");
+  if (event.detail.path === "/admin/tags/slug-preview" && box && !box.hidden) {
+    event.preventDefault();
   }
-  if (field.id !== "tag-label") return;
-
-  const slug = document.getElementById("tag-slug");
-  if (!slug || slug.dataset.touched === "1") return;
-  slug.value = slugify(field.value);
 });
+
 </script>
 {% endblock %}

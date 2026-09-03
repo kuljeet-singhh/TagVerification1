@@ -64,10 +64,12 @@ RULE_VERSION = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
 #: passed a blocked one; the fix could not reach that creative, because the wrong verdict was
 #: cached under a (packs_version, decision_version) pair that a sampler change did not move.
 #:
-#: It is folded in HERE rather than into packs_version because of where each is computed.
-#: packs_version is stamped by the detector inside the Space, which only ever receives a single
-#: still and cannot see tagverify/analyze/video.py at all. decision_version is computed in this
-#: tier, which is where frames are chosen. Cost of the placement: bumping the sampler re-keys
+#: It is folded in HERE rather than into packs_version because of what each one covers.
+#: packs_version covers the QUESTION -- the model id, the prompt and the catalog -- and frame
+#: sampling is not part of the question; it is part of how this tier decides what to ask about.
+#: (Under SigLIP the separation was physical too: the fingerprint was stamped inside the Space,
+#: which received one still and could not see analyze/video.py.) Cost of the placement:
+#: bumping the sampler re-keys
 #: cached image verdicts too, which is wasteful but never wrong.
 SAMPLER_VERSION = hashlib.sha256(
     Path(tagverify.analyze.video.__file__).read_bytes()
@@ -85,11 +87,15 @@ class FrameRef:
 @dataclass(slots=True)
 class Evidence:
     top_phrase: str
-    #: Both None under a VLM, which reports what it SAW rather than which of ten crops best
-    #: matched which canned phrase. Optional rather than removed, because the SigLIP path
-    #: still fills them and dooh-backend already tolerates null in both
+    #: ALWAYS None now. The model reports what it SAW rather than which of ten crops best
+    #: matched which canned phrase, and there is no other scorer left to fill them.
+    #:
+    #: Kept rather than removed for two reasons that outlived the ranking model: stored
+    #: `analyses` rows carry real values in both, and dooh-backend already parses them
     #: (content-verification/client.ts guards `crop` with Array.isArray and passes `sigmoid`
-    #: through a numeric coercion), so no consumer changes.
+    #: through a numeric coercion). Dropping them from the response is a breaking change to
+    #: buy nothing. tests/test_vlm.py pins that they are null and never 0 -- a zero would read
+    #: as a measured value.
     crop: list[float] | None
     sigmoid: float | None
     #: None for a still. Set for video, and it is the WHOLE point of the video path: "contains
@@ -147,19 +153,57 @@ class Verdict:
 
 @dataclass(slots=True)
 class Thresholds:
-    """The subset of a tag_thresholds row that decides a verdict."""
+    """
+    The subset of a tag_thresholds row that bears on a verdict.
 
-    threshold_low: float = 0.3
-    threshold_high: float = 0.55
-    sigmoid_floor: float = 0.005
+    NOT A THRESHOLD ANY MORE, despite the name and the table it comes from. `threshold_low`,
+    `threshold_high` and `sigmoid_floor` were cutoffs applied to a similarity; migration 0004
+    dropped them, because `decide()` had stopped reading them when the ranking model went and
+    a number nothing reads is a number that goes wrong quietly. The name is kept because the
+    table is called `tag_thresholds` and renaming both is churn for no reader.
+
+    What is left is the answer to "has this tag ever been measured, and does that measurement
+    still describe the prompts we are serving?" -- AGENTS.md rule 4, and nothing else.
+    """
+
     calibrated: bool = False
+    #: The `packs_version` these numbers were measured against. A different live fingerprint
+    #: makes the measurement stale -- see `effective_calibrated`.
     packs_version_seen: str | None = None
     precision: float | None = None
     recall: float | None = None
 
 
-#: Used when a tag has no row yet. Matches the defaults block in packs.json.
+#: Used when a tag has no `tag_thresholds` row at all: never measured, which is what the
+#: default `calibrated=False` says.
 FALLBACK = Thresholds()
+
+
+def effective_calibrated(t: Thresholds, live_packs_version: str | None) -> bool:
+    """
+    Is this tag's calibration BOTH present and still current?
+
+    A tag measured against a different catalog is stale, not calibrated: the prompts were
+    reworded underneath the measurement, so it no longer describes the answers being produced.
+    Rule 4 again -- presenting a superseded measurement as a current one is the same failure as
+    presenting a guess as a measurement.
+
+    ONE FUNCTION BECAUSE THERE USED TO BE TWO, AND THEY DRIFTED. This comparison lived inline
+    in `decide()` and again in `api/v1/tags.py`, and the admin panel had a third answer: it
+    read `row.calibrated` raw and rendered eight tags as measured while every API response
+    said none of them were. A reader on that page saw P 69% R 93% for a calibration that had
+    been stale since the prompts changed. Three copies of a rule is how a compliance tool ends
+    up disagreeing with itself; there is one now, and every surface calls it.
+
+    `live_packs_version` of None means "we could not ask" -- then the stored flag is the best
+    available answer and is passed through, rather than manufacturing a `false` out of our own
+    ignorance.
+    """
+    if not t.calibrated:
+        return False
+    if not live_packs_version or not t.packs_version_seen:
+        return True
+    return t.packs_version_seen == live_packs_version
 
 
 def decide(
@@ -205,20 +249,13 @@ def decide(
     else:
         confidence = "low"
 
-    # A tag measured against a different catalog is stale, not calibrated. Same comparison the
-    # threshold path made, for the same reason: presenting a guess as a measurement is the
-    # failure this product exists to prevent.
-    stale = bool(live_packs_version) and bool(t.packs_version_seen) and (
-        t.packs_version_seen != live_packs_version
-    )
-
     return Verdict(
         tag=raw["tag"],
         present=present,
         score=score,
         confidence=confidence,
         decided_by="vlm",
-        calibrated=t.calibrated and not stale,
+        calibrated=effective_calibrated(t, live_packs_version),
         band="present" if present else ("absent" if present is False else "uncertain"),
         evidence=Evidence(
             top_phrase=raw["top_phrase"],
@@ -259,9 +296,6 @@ def decide_all(
 
 def _to_thresholds(row: TagThreshold) -> Thresholds:
     return Thresholds(
-        threshold_low=row.threshold_low,
-        threshold_high=row.threshold_high,
-        sigmoid_floor=row.sigmoid_floor,
         calibrated=row.calibrated,
         packs_version_seen=row.packs_version_seen,
         precision=row.precision,
@@ -274,15 +308,16 @@ async def load_thresholds(session: AsyncSession) -> dict[str, Thresholds]:
     return {row.slug: _to_thresholds(row) for row in rows}
 
 
-# Memoised thresholds for the /analyze hot path.
+# Memoised calibration state for the /analyze hot path.
 #
-# Thresholds change only when calibration runs or someone edits them in the admin UI — rare,
-# and never mid-burst. The 30s TTL is the lag between saving a threshold and it taking
-# effect, and the admin UI invalidates the cache explicitly on save so in practice the lag is
-# zero for the person who made the change.
+# NOTHING WRITES THIS TABLE ANY MORE. The hand-edit form went with the thresholds in migration
+# 0004, and `dooh apply-calibration` went with the ranking model, so the 30s TTL is now the lag
+# after a write that no code path performs. It is kept rather than raised or removed because
+# `docs/VLM_SCORING.md` §5.2 has the eval harness writing `calibrated` / `precision` / `recall`
+# back here, and a memo that is already correct is one less thing for that change to get wrong.
 #
-# This mattered far more when every query was an HTTPS round trip. It is kept because 20 rows
-# that change twice a week do not need re-reading per request, not because it is load-bearing.
+# `invalidate_threshold_cache()` was deleted with its only caller. Restore it alongside that
+# writer rather than leaving a function nothing calls.
 _TTL_SECONDS = 30.0
 _cache: tuple[float, dict[str, Thresholds]] | None = None
 
@@ -305,32 +340,36 @@ def decision_version(
 
     WHAT THIS IS FOR
     ----------------
-    `packs_version` fingerprints the PROMPTS, so a caller can tell when the numbers the model
-    produces have changed. Nothing fingerprinted the other half — the rule those numbers are
-    fed to, and the cutoffs they are compared against — and that gap is not academic.
+    `packs_version` fingerprints the PROMPTS, so a caller can tell when the question we ask has
+    changed. Nothing fingerprinted the other half — the rule the answer is read by — and that
+    gap is not academic.
 
     A downstream integrator caching our verdicts keyed on `packs_version` alone keeps serving
     a refusal we have since decided is wrong, and never calls us again to find out. That is
-    not hypothetical: this service re-decides from raw scores on every read precisely so a
-    threshold edit applies retroactively, and a consumer cache silently undid it. Handing out
-    this value lets them put it in their key and get the retroactivity back.
+    not hypothetical: this service re-decides from raw answers on every read precisely so a
+    change to the rule applies retroactively, and a consumer cache silently undid it. Handing
+    out this value lets them put it in their key and get the retroactivity back.
 
     It is also the answer to "is my change live?", which is otherwise unanswerable from
     outside the process — see RULE_VERSION.
 
     WHAT IT COVERS
     --------------
-    The rule (`inference/banding.py`) and every number a verdict is compared against, INCLUDING
-    the fallback used for a tag with no row at all (`decide()` does `t = threshold or FALLBACK`,
-    so editing those defaults changes verdicts for every uncalibrated tag and would otherwise
-    be invisible here). Adding, removing or editing a row all move it.
+    The rule (this module, via RULE_VERSION) and every field of every `Thresholds`, INCLUDING
+    the fallback used for a tag with no row at all (`decide()` does `t = threshold or FALLBACK`).
+    Adding, removing or editing a row all move it.
 
-    Every field of `Thresholds` is folded in mechanically rather than hand-picking the ones
-    that currently affect a verdict. A hand-picked tuple silently under-covers the moment
-    somebody adds a field and wires it into `decide()` — which is exactly the class of bug
-    this exists to prevent. The cost of over-covering is one spare cache generation when
-    calibration writes a new `precision`, and calibration rewrites the cutoffs in the same
-    statement anyway.
+    There are no cutoffs left to cover -- migration 0004 dropped them -- so what folds in now
+    is the calibration state: `calibrated`, `packs_version_seen`, `precision`, `recall`. That
+    is NOT over-covering by accident. `calibrated` is served to callers on every verdict and
+    `packs_version_seen` decides it (see `effective_calibrated`), so a caller keying its cache
+    on this value gets a re-key when the honesty of a verdict changes, which is exactly when
+    it should stop serving the old one.
+
+    Every field is folded in MECHANICALLY rather than hand-picking the ones that currently
+    affect a verdict. A hand-picked tuple silently under-covers the moment somebody adds a
+    field and wires it into `decide()` — which is exactly the class of bug this exists to
+    prevent, and the reason this survived the thresholds it was written for.
 
     It deliberately does NOT cover the prompts. That is `packs_version`, and folding the two
     together would make each one's meaning unreadable.
@@ -339,10 +378,10 @@ def decision_version(
     frames decides which pixels are scored at all — a verdict input that neither fingerprint
     used to describe. See that constant for why it lives here and not with the prompts.
 
-    `scorer_rule` IS THE VLM's HALF OF THE SAME IDEA. Under SigLIP the whole rule is
-    `banding.py` plus the cutoffs. Under a VLM there are no cutoffs, and the rule is the prompt
-    template, the response schema and the confidence bands above -- so the caller passes a
-    fingerprint of those and it folds in here. Same contract, different inputs.
+    `scorer_rule` IS THE VLM's HALF OF THE SAME IDEA. Under SigLIP the whole rule was
+    `banding.py` plus the cutoffs. There are no cutoffs, and the rule is the prompt template,
+    the response schema and the confidence bands above -- so the caller passes a fingerprint of
+    those and it folds in here. Same contract, different inputs.
 
     IT APPENDS ONLY WHEN NON-EMPTY, and that is load-bearing rather than tidy. An empty
     `scorer_rule` has to produce the byte-identical digest this function returned before the
@@ -351,9 +390,9 @@ def decision_version(
     invalidation is cheap; one triggered by a change that cannot affect a single verdict is
     just noise, and noise is how a real re-key later gets ignored.
 
-    NOT A LEAK. This is a one-way hash, truncated to 48 bits. AGENTS.md rule 6 forbids exposing
-    thresholds through the API, and a digest of them is not them: you cannot read a cutoff back
-    out, and a caller tuning a creative against it learns nothing.
+    NOT A LEAK. This is a one-way hash, truncated to 48 bits. AGENTS.md rule 7 forbids exposing
+    thresholds through the API, and a digest is not the thing: you cannot read a value back out,
+    and a caller tuning a creative against it learns nothing.
     """
     seed = f"{RULE_VERSION}|{SAMPLER_VERSION}"
     if scorer_rule:
@@ -378,7 +417,3 @@ def decision_version(
     return digest.hexdigest()[:12]
 
 
-def invalidate_threshold_cache() -> None:
-    """Call after writing thresholds so admin edits are visible immediately."""
-    global _cache
-    _cache = None

@@ -46,14 +46,14 @@
           <ul class="callout-list">
             <li>
               <code>present: null</code> means <strong>uncertain</strong>, not false. The
-              score fell between the thresholds. Treat it as &ldquo;needs a human&rdquo; —
-              reading it as absent is how a non-compliant creative slips through.
+              model declined to answer. Treat it as &ldquo;needs a human&rdquo; — reading it
+              as absent is how a non-compliant creative slips through.
             </li>
             <li>
-              <code>calibrated: false</code> means that tag&rsquo;s thresholds were never
-              measured against labelled images. The verdict is an educated guess, and
-              presenting it as a measurement is the failure mode this service exists to
-              prevent.
+              <code>calibrated: false</code> means that tag has not been measured against
+              labelled images — or was measured, and the question has since been reworded.
+              The verdict is an educated guess, and presenting it as a measurement is the
+              failure mode this service exists to prevent.
             </li>
           </ul>
         </div>
@@ -180,21 +180,21 @@ for (const verdict of results) {
   "request_id": "5f1c...",
   "image_hash": "9a3f...",          // sha256 of what you sent; never stored, either kind
   "image_bytes": 152341,
-  "model": "' ~ (model or 'google/siglip2-base-patch16-224') ~ '",
-  "packs_version": "' ~ (packs_version or '1a2db18ba940') ~ '",
+  "model": "' ~ (model or 'gemini-3.6-flash') ~ '",
+  "packs_version": "' ~ (packs_version or '665544af9296') ~ '",
   "cached": false,
   "latency_ms": 612,
   "results": [{
     "tag": "alcohol",
     "present": true,                // true | false | null
-    "score": 0.977,
-    "confidence": "high",           // high | medium | low
-    "decided_by": "siglip",         // siglip | sigmoid_floor
-    "calibrated": false,
+    "score": 0.977,                 // the model\'s confidence in its own answer
+    "confidence": "high",           // high | medium | low, bucketed from score
+    "decided_by": "vlm",
+    "calibrated": false,            // never measured, or measured then reworded
     "evidence": {
-      "top_phrase": "a glass of beer with foam",
-      "crop": [0.0, 0.5, 0.5, 1.0], // where it was found, as 0-1 fractions
-      "sigmoid": 0.028
+      "top_phrase": "a woman holding two steins of beer",  // what it SAW
+      "crop": null,                 // null from this scorer, never 0
+      "sigmoid": null
     }
   }],
   "uncalibrated_tags": ["alcohol"]  // key omitted entirely when empty
@@ -215,12 +215,12 @@ for (const verdict of results) {
     "present": true,
     "score": 0.984,
     "confidence": "high",
-    "decided_by": "siglip",
+    "decided_by": "vlm",
     "calibrated": false,
     "evidence": {
-      "top_phrase": "a glass of beer with foam",
-      "crop": [0.0, 0.5, 0.5, 1.0],
-      "sigmoid": 0.031,
+      "top_phrase": "a woman holding two steins of beer",
+      "crop": null,
+      "sigmoid": null,
       "frame": { "index": 2, "timestamp_s": 2.0 }   // WHICH frame decided this
     }
   }],
@@ -252,29 +252,32 @@ for (const verdict of results) {
               partial &mdash; stated rather than left to be inferred.</dd>
 
           <dt>score</dt>
-          <dd>Softmax mass on the tag&rsquo;s positive prompts, 0&ndash;1. This is the number
-              the thresholds are compared against.</dd>
+          <dd>The model&rsquo;s own confidence in its own answer, 0&ndash;1. <strong>Nothing is
+              compared against it</strong> — see <a href="#decisions">How a verdict is
+              decided</a>. Use it to sort a review queue, never to decide one.</dd>
 
           <dt>decided_by</dt>
-          <dd><code>siglip</code> for a normal threshold decision, <code>sigmoid_floor</code>
-              when the absolute-resemblance veto fired — see
-              <a href="#decisions">How a verdict is decided</a>.</dd>
+          <dd><code>vlm</code>. Stored verdicts from before the current scorer may carry
+              <code>siglip</code> or <code>sigmoid_floor</code>; the field stays open so an
+              older row still parses.</dd>
 
           <dt>calibrated</dt>
-          <dd>Whether this tag&rsquo;s thresholds were measured against labelled images.
-              <code>false</code> means the verdict is a guess.</dd>
+          <dd>Whether this tag has been measured against labelled images, under the wording
+              currently being asked. <code>false</code> means the verdict is a guess.</dd>
 
           <dt>evidence.crop</dt>
-          <dd><code>[x0, y0, x1, y1]</code> as fractions of width and height — the window that
-              scored highest, suitable for drawing a box on the original.</dd>
+          <dd><code>[x0, y0, x1, y1]</code> as fractions of width and height. <code>null</code>
+              from the current scorer, which reports what it saw rather than which window
+              scored highest.</dd>
 
           <dt>evidence.sigmoid</dt>
-          <dd>Absolute resemblance to the tag, independent of the comparison pool. Only
-              decisive when it falls below the floor.</dd>
+          <dd><code>null</code> from the current scorer. It was an absolute resemblance, which
+              a reading model does not produce. Null rather than zero: a zero would read as a
+              measured absence rather than a question never asked.</dd>
 
           <dt>cached</dt>
-          <dd>Whether the raw scores came from the cache. Thresholds are re-applied on every
-              read, so a cached response still reflects the current thresholds.</dd>
+          <dd>Whether the raw answers came from the cache. The decision rule is re-applied on
+              every read, so a cached response always reflects the current rule.</dd>
         </dl>
 
         <p>
@@ -286,45 +289,70 @@ for (const verdict of results) {
       <section id="decisions">
         {{ heading('decisions', 'How a verdict is decided') }}
         <p>
-          Each tag has a pool of positive phrases, hand-written hard negatives, and shared
-          distractors. A softmax across that pool answers the <em>relative</em> question —
-          which of these best describes the image — and <code>score</code> is the probability
-          mass that landed on the positives.
+          <strong>It is not decided here.</strong> Each tag&rsquo;s name is put to the
+          model as a question about the creative, and the model answers
+          <code>true</code>, <code>false</code> or <em>not sure</em>. That answer is carried
+          out to you unchanged. There is no threshold, no band and no veto.
         </p>
         <p>
-          A sigmoid on the positives alone answers the <em>absolute</em> question: does this
-          image resemble the tag at all? That is checked <strong>first</strong>, as a veto.
-          Softmax must sum to 1, so a photo of a mountain can hand half its mass to
-          &ldquo;a glass of beer&rdquo; purely by beating equally-irrelevant options. When
-          the veto fires, <code>decided_by</code> is <code>sigmoid_floor</code>.
+          This is the part most worth knowing, because it inverts what the older
+          documentation described. A ranking model returned a <em>similarity</em>, which means
+          nothing on its own &mdash; measured true positives ran from
+          <strong>0.028 to 0.902</strong> &mdash; so a verdict had to be two cutoffs and an
+          absolute-resemblance floor applied to it, and every tag needed calibrating before
+          any of it meant anything. A reading model answers the question instead, so there is
+          nothing left to band.
         </p>
         <p>
-          Otherwise the bands are inclusive at both edges:
+          <code>score</code> is the model&rsquo;s <em>own reported confidence in its own
+          answer</em>, not a resemblance and not a probability of presence. <strong>Nothing
+          enforces on it.</strong> It sorts a review queue by &ldquo;answered, but
+          barely&rdquo;; it never decides, clears or blocks anything. Do not threshold it
+          &mdash; a cutoff on a self-report is not the same quantity as a cutoff on a
+          measurement, and treating it as one would reintroduce the rule this replaced.
         </p>
-        <dl class="fields">
-          <dt>present</dt>
-          <dd><code>score &ge; threshold_high</code></dd>
-          <dt>absent</dt>
-          <dd><code>score &le; threshold_low</code></dd>
-          <dt>null</dt>
-          <dd>anything between the two — uncertain, and yours to escalate</dd>
-        </dl>
+        <p>
+          <code>confidence</code> is that same number bucketed for triage:
+          <code>high</code> at or above <strong>0.85</strong>, <code>medium</code> at or above
+          <strong>0.60</strong>, <code>low</code> below it &mdash; and always <code>low</code>
+          for an uncertain verdict, which has no margin to report.
+        </p>
+        <div class="callout callout-warn">
+          <h3><code>present: null</code> means uncertain, never false</h3>
+          <p>
+            It is the model declining to answer, and it is a request for a human. Collapsing
+            it to <code>false</code> turns &ldquo;we did not check&rdquo; into &ldquo;we
+            checked and it is clean&rdquo;, which is the single most damaging thing a
+            consumer of this API can do with the response.
+          </p>
+        </div>
       </section>
 
       <section id="calibration">
         {{ heading('calibration', 'Calibration') }}
         <p>
-          Thresholds are per-tag and live in the database, so they can be retuned without
-          redeploying the model. A tag is <code>calibrated: true</code> only after those
-          numbers were measured against labelled images — at least eight per class. Until
-          then the thresholds are the provisional guesses shipped in the prompt pack, and the
-          field says so.
+          <code>calibrated</code> answers one question: <strong>has this tag ever been run
+          against labelled images?</strong> It no longer describes a tuned threshold, because
+          there is no threshold &mdash; it describes whether anyone has checked that the model
+          answers this particular question correctly.
         </p>
         <p>
-          <code>packs_version</code> fingerprints the prompt pack. If a threshold was
-          calibrated against a different pack than the one currently serving, the threshold is
-          still applied — it is the best available — but <code>calibrated</code> reverts to
-          <code>false</code>, because it no longer describes the scores being produced.
+          <code>false</code> does not mean the verdict is wrong. It means the verdict is an
+          educated guess that has not been measured, and you should weigh it accordingly. It
+          is exposed for exactly that reason, and it is never hardcoded true.
+        </p>
+        <p>
+          <strong>A measurement can go stale, and then it reports
+          <code>false</code> again.</strong> <code>packs_version</code> fingerprints the
+          questions being asked. If a tag was measured under one name and has since been
+          renamed, the measurement no longer describes the answers being produced &mdash; so <code>calibrated</code> reverts to <code>false</code> rather
+          than carrying a superseded number forward. Every tag reads
+          <code>false</code> today for precisely this reason.
+        </p>
+        <p class="small muted">
+          <code>decision_version</code> moves when any of this changes. Key your cache on it
+          together with <code>packs_version</code>, or a verdict we have since revised will
+          outlive the revision on your side.
         </p>
       </section>
 
@@ -333,23 +361,24 @@ for (const verdict of results) {
 
         <p>
           The catalog is editable. These four endpoints are the JSON equivalent of the Tags
-          tab in <a href="/admin">Admin</a> &mdash; create a tag, rewrite its phrases, retire
-          it, or read the catalog as stored rather than as the model currently has it.
+          tab in <a href="/admin">Admin</a> &mdash; create a tag, rename it, retire it, or
+          read the catalog as stored.
         </p>
 
-        <div class="callout callout-warn">
-          <h3>Writing a tag does not publish it</h3>
+        <div class="callout">
+          <h3>A written tag is live</h3>
           <p>
-            The model loads every prompt once, at startup. A tag written here is a database
-            row and nothing more until the pack is published &mdash; which is why every write
-            below answers <code>"pending_publish": true</code>.
+            There is no publish step. The model is asked its question per request, so the
+            catalog is read from the database on every call &mdash; a tag saved a second ago is
+            already being scored, and a reworded one is already being scored differently.
           </p>
           <p>
-            Publish with <code class="mono">dooh export-packs --push</code>. That writes the
-            pack and pushes it into the running model, which re-encodes the prompts in place.
-            No restart. Until you do, <a href="#other"><code>GET /api/v1/tags</code></a> and
-            every <code>analyze</code> call keep using the old catalog &mdash; that endpoint is
-            served from what the model holds, not from what you just wrote.
+            Every write still answers <code>"pending_publish": true</code>. That is a
+            formality kept for callers that read it, not a state: nothing is pending. Rewording
+            a tag does move <code>packs_version</code>, which sets
+            <code>calibrated: false</code> on it until it is measured under the new name
+            &mdash; so batch edits rather than trickling them. Editing a
+            <code>description</code> moves nothing.
           </p>
         </div>
 
@@ -410,40 +439,41 @@ headers = {"Cookie": f"dooh_admin={cookie}", "X-CSRF-Token": csrf}') }}
           <dd>Lowercase letters, digits and underscores, starting with a letter
               (<code>^[a-z][a-z0-9_]*$</code>). Trimmed and lowercased for you. It is
               <strong>permanent</strong> &mdash; it keys the tag&rsquo;s eval images and its
-              measured thresholds, and it cannot be changed later.</dd>
+              calibration row, it is the identifier a screen stores when it blocks the tag, and
+              it cannot be changed later. Retiring a tag does not release it.
+              <br>
+              <span class="small muted">Required <em>here</em>. The profile admin form derives
+              it from the label instead and lets you override it, which is why that form asks
+              for a name and a sentence and nothing else. The two paths differ deliberately:
+              an API caller already has an identifier in mind, or it would not be calling.</span></dd>
 
           <dt>label<span class="req">required</span></dt>
-          <dd>What a screen owner sees when choosing what to block.</dd>
+          <dd>The tag&rsquo;s name, and <strong>the whole of what the model is asked to look
+              for</strong>. It reaches the model as <code>- alcohol: Alcoholic content</code>
+              and nothing else about the tag does, so this field IS the detection. Also what a
+              screen owner sees when choosing what to block. See
+              <a href="#tags-writing">below</a>.</dd>
 
-          <dt>description<span class="req">required</span></dt>
-          <dd>One line, shown to a screen owner &mdash; and, under the VLM scorer, the whole of
-              what the model is asked. Name the thing, name its boundary, and say what does
-              <em>not</em> count.</dd>
-
-          <dt>positives<span class="req">SigLIP only</span></dt>
-          <dd>At least 5 phrases describing what you are hunting; 8 or more is where tags start
-              behaving. <strong>Required only while the SigLIP scorer is running</strong>, which
-              ranks an image against them. The VLM scorer reads the description instead and
-              never sees these, so a tag authored for it may omit them.</dd>
-
-          <dt>negatives<span class="req">SigLIP only</span></dt>
-          <dd>At least 6 phrases naming what gets <em>mistaken</em> for it. Under SigLIP these
-              do most of the work &mdash; see <a href="#tags-writing">below</a>. Ignored by the
-              VLM scorer, on the same terms as <code>positives</code>.</dd>
-
-          <dt>rationale</dt>
-          <dd>Why these negatives. Optional, and worth writing: it is what stops the next
-              person undoing a fix they cannot see.</dd>
-
-          <dt>sigmoid_floor</dt>
-          <dd>Between 0 and 1. Leave it out. It is measured by calibration, not authored, and
-              omitting it on an update preserves whatever was measured.</dd>
+          <dt>description</dt>
+          <dd><strong>Optional.</strong> One line, shown to a screen owner beneath the name in
+              the blocked-categories picker; a tag without one shows just its name.
+              <strong>Not sent to the model</strong>, and editing it moves no fingerprint and
+              re-scores nothing. Write it for the person choosing, not for the classifier.</dd>
         </dl>
+
+        <p class="small muted">
+          <code>positives</code>, <code>negatives</code>, <code>rationale</code> and
+          <code>sigmoid_floor</code> are gone. They were SigLIP&rsquo;s question &mdash; it
+          ranked an image against a pool of phrases and could not answer without one &mdash; and
+          nothing has read them since that model was retired. They are <em>ignored</em> rather
+          than rejected, so a caller still sending them gets a <code>200</code> and can drop
+          them in its own time.
+        </p>
 
         <p>
           Returns <code>201</code> with the stored row, plus <code>warnings</code> and
           <code>pending_publish</code>. <strong>Warnings never block a save</strong> &mdash;
-          they are advice about phrasing, and an empty list means none.
+          they are advice about the name, and an empty list means none.
         </p>
 
 {{ code('tags-create', 'shell', 'curl -X POST https://your-app/api/v1/tags \\
@@ -453,27 +483,21 @@ headers = {"Cookie": f"dooh_admin={cookie}", "X-CSRF-Token": csrf}') }}
   -d \'{
         "slug": "pet_supplies",
         "label": "Pet supplies",
-        "description": "Pet food, toys and accessories.",
-        "positives": ["a bag of dog food", "a cat sitting in a pet carrier", "..."],
-        "negatives": ["a bag of rice", "a wild animal in a forest", "..."]
+        "description": "Pet food, treats, toys, bedding and accessories for domestic pets. Not livestock feed, and not wild animals."
       }\'') }}
 
 {{ code('tags-create-response', 'json', '{
   "slug": "pet_supplies",
   "label": "Pet supplies",
-  "description": "Pet food, toys and accessories.",
-  "positives": ["a bag of dog food", "..."],
-  "negatives": ["a bag of rice", "..."],
-  "rationale": null,
-  "sigmoid_floor": null,
+  "description": "Pet food, treats, toys, bedding and accessories for domestic pets. Not livestock feed, and not wild animals.",
   "status": "active",
   "updated_at": "2026-08-26T09:41:12.402831+00:00",
   "updated_by": "admin",
 
   // Advice, not errors. The tag saved.
-  "warnings": ["Only 6 positives. 8+ is where tags start behaving."],
+  "warnings": [],
 
-  // Written, not live. Run `dooh export-packs --push`.
+  // A formality: there is no publish step. The tag is live at the next request.
   "pending_publish": true
 }') }}
 
@@ -486,8 +510,7 @@ headers = {"Cookie": f"dooh_admin={cookie}", "X-CSRF-Token": csrf}') }}
         <p>
           <strong>Despite the verb, this is a full replace, not a partial update.</strong>
           Every field <code>POST</code> requires must be sent; anything you omit is not
-          preserved. The one exception is <code>sigmoid_floor</code>, which is kept when
-          absent because it is measured rather than typed.
+          preserved.
         </p>
         <p>
           The slug comes from the path and cannot be changed &mdash; a rename would strand the
@@ -507,45 +530,9 @@ headers = {"Cookie": f"dooh_admin={cookie}", "X-CSRF-Token": csrf}') }}
         </p>
         <p>
           The row survives so the slug keeps its labelled eval images and measured thresholds,
-          and a screen that still blocks the tag keeps working until it is next saved. Two
-          consequences worth knowing: a retired tag&rsquo;s <em>phrases</em> become free for
-          another tag to use, but its <em>slug</em> stays reserved &mdash; so
+          and a screen that still blocks the tag keeps working until it is next saved. The
+          consequence worth knowing: the <em>slug</em> stays reserved &mdash; so
           <code>POST</code>ing it again returns <code>400</code>, not a fresh tag.
-        </p>
-
-        <h3>Publish</h3>
-        <div class="endpoint">
-          <span class="method">POST</span>
-          <span class="endpoint-path">/api/v1/tags/publish</span>
-          <span class="note">admin session or <code>tags:write</code></span>
-        </div>
-        <p>
-          Makes every written tag live, with no restart. Exports the catalog to the pack file
-          and pushes those bytes into the running model, which re-encodes its prompts in place.
-          The remote half of <code class="mono">dooh export-packs --push</code>, and the same
-          code underneath.
-        </p>
-        <p>
-          <strong>It publishes the whole catalog, not one tag.</strong> A pack is a single
-          artifact with a single fingerprint, so there is no such thing as publishing one tag
-          &mdash; and this will take everyone&rsquo;s pending edits live, not just yours.
-        </p>
-        <p>
-          Not cheap, so batch your edits and publish once: re-encoding takes seconds and moves
-          <code>packs_version</code>, which makes every tag report
-          <code>calibrated: false</code> until it is measured again.
-        </p>
-
-{{ code('tags-publish-response', 'json', '{
-  "packs_version": "2d9b089ea283",   // the NEW fingerprint; every verdict is stamped with it
-  "count": 22,
-  "tags": ["alcohol", "automotive", "..."]   // what the model now actually holds
-}') }}
-
-        <p class="small muted">
-          Returns <code>409 NOT_CONFIGURED</code> when no shared secret is set between the two
-          tiers &mdash; publishing is off rather than open, and retrying will not help.
-          <code>503</code> if the model is still waking, which is worth retrying.
         </p>
 
         <h3>Read the catalog as stored</h3>
@@ -555,53 +542,73 @@ headers = {"Cookie": f"dooh_admin={cookie}", "X-CSRF-Token": csrf}') }}
           <span class="note">admin session</span>
         </div>
         <p>
-          Every row including retired ones, with the prompts. This is
+          Every row including retired ones, with <code>status</code> and authorship. This is
           <strong>not</strong> the same as <a href="#other"><code>GET /api/v1/tags</code></a>:
-          that one is the public catalog as the <em>model</em> currently has it and never
-          exposes prompts, this one is the database. When they disagree, something is written
-          but not published.
+          that one is the public catalog, active tags only, carrying a
+          <code>calibrated</code> flag instead.
         </p>
 
 {{ code('tags-managed-response', 'json', '{
-  "count": 21,
-  "tags": [{ "slug": "alcohol", "label": "Alcohol", "positives": ["..."], "negatives": ["..."],
+  "count": 24,
+  "tags": [{ "slug": "alcohol", "label": "Alcohol", "description": "Beer, wine and spirits...",
              "status": "active", "updated_at": "...", "updated_by": "admin" }]
 }') }}
 
         <h3 id="tags-writing">What makes a tag work</h3>
         <p>
-          The phrases are the whole of the detection. The model is zero-shot: it compares the
-          image against these words and nothing else, so a tag is only as good as its wording.
-          Two rules, both measured:
+          <strong>The name is the whole of the detection.</strong> The model receives one line
+          per category &mdash; <code>- alcohol: Alcoholic content</code> &mdash; and nothing
+          else about the tag. Everything about <em>how</em> to decide is in the system
+          instruction: judge only what is visibly depicted, read labels and packaging, count a
+          category present if it appears anywhere however small, and answer
+          <code>null</code> rather than guess. The catalog supplies only <em>which</em>
+          categories.
+        </p>
+        <p>
+          So a tag is as good as its name, and unlike a threshold there is nothing to tune
+          afterwards. Two rules:
         </p>
         <ul class="callout-list">
           <li>
-            <strong>Mirror the phrasing.</strong> If a positive says &ldquo;a scoop of X&rdquo;,
-            a negative should say &ldquo;a scoop of Y&rdquo;. With only
-            &ldquo;a tin of baby formula&rdquo; as a negative, infant formula scored
-            <strong>0.709</strong> for <code>protein_supplements</code> &mdash; wrongly present.
-            Adding &ldquo;a scoop of baby formula milk powder&rdquo; dropped it to
-            <strong>0.224</strong> while real whey stayed at <strong>0.999</strong>.
+            <strong>Name the category, not the object.</strong> &ldquo;Alcoholic content&rdquo;
+            reads as a category a screen owner might block; &ldquo;dog&rdquo; is a word.
+            &ldquo;Dogs and puppies&rdquo; is better than both for the same three syllables.
           </li>
           <li>
-            <strong>Name the confusable neighbour, not random things.</strong> The model
-            already scores a mountain near zero for alcohol; a negative that is obviously
-            different teaches it nothing. Half your negatives should be things a careless human
-            might mislabel.
+            <strong>Say it the way you would to someone seeing it for the first time.</strong>
+            The same name is shown to the screen owner choosing what to block, so if it does
+            not tell them what they are blocking, it is not telling the model either.
           </li>
         </ul>
+        <div class="callout callout-warn">
+          <h3>What you can no longer say</h3>
+          <p>
+            A name cannot carry a <em>boundary</em>. There is nowhere to write &ldquo;packaged
+            juice counts as a sugary drink&rdquo; or &ldquo;alcohol-free 0.0% beer does
+            not&rdquo;, so the model decides those cases on its own and its answer can move
+            when the model version does. Where two categories overlap &mdash; junk food and
+            restaurant dining, protein supplements and pharmaceuticals &mdash; expect both to
+            fire on the ambiguous creative.
+          </p>
+          <p>
+            <strong>The remaining lever is the name.</strong> A tag that misfires is fixed by
+            renaming it, which correctly re-keys the verdicts decided under the old name.
+          </p>
+        </div>
         <p class="small muted">
-          A phrase already used as another active tag&rsquo;s positive is refused. Two tags
-          sharing a phrase lose it from both their comparison pools, which weakens the
-          competition each relies on. The catalog is also capped at 30 active tags, because
-          every analyze call sends the whole catalog.
+          Renaming a tag moves <code>packs_version</code>, which is correct: verdicts decided
+          under the old name stop being served under the new one. Editing a
+          <code>description</code> does not, because it is not part of the question. The
+          catalog is capped at 100 active tags, because every analyze call sends the whole
+          catalog.
         </p>
 
         <h3>Errors</h3>
         <p>
           Validation failures return <code>400 BAD_REQUEST</code> and the
           <code>message</code> is written to be shown to whoever typed it &mdash; e.g.
-          <em>&ldquo;A tag needs at least 5 positives &mdash; this one has 4.&rdquo;</em>
+          <em>&ldquo;A name is required &mdash; it is what the model is asked to look for, and
+          what a screen owner sees.&rdquo;</em>
           Missing session or CSRF token is <code>403 FORBIDDEN</code>; an unknown slug on
           update or retire is <code>404 NOT_FOUND</code>. See <a href="#errors">Errors</a>.
         </p>

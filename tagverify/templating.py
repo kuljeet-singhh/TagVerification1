@@ -104,10 +104,6 @@ def relative_time(value: datetime | None) -> str:
     return value.strftime("%d %b %Y")
 
 
-def percent(value: float | None) -> str:
-    return "—" if value is None else f"{round(value * 100)}%"
-
-
 #: Verdict presentation, defined ONCE.
 #:
 #: Templates look up by band rather than composing class names, so there is exactly one place
@@ -123,7 +119,12 @@ BANDS: dict[str, dict[str, str]] = {
     "uncertain": {
         "word": "Needs review",
         "icon": "question",
-        "note": "The score fell between the thresholds. A human has to decide.",
+        #: NOT "the score fell between the thresholds" -- there are no thresholds, migration
+        #: 0004 dropped them, and nothing fell between anything. The model was asked and
+        #: said it could not tell, which is a deliberate answer rather than a missing one:
+        #: scoring/prompt.py tells it null "is never penalised, and guessing in order to
+        #: avoid it is the single worst thing you can do here". AGENTS.md rule 1.
+        "note": "The model could not tell from this creative. A human has to decide.",
     },
     "absent": {
         "word": "Absent",
@@ -142,7 +143,6 @@ templates.env.globals.update(
 )
 templates.env.filters.update(
     relative_time=relative_time,
-    percent=percent,
 )
 
 

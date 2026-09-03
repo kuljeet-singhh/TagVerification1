@@ -47,10 +47,15 @@ MAX_VIDEO_BYTES = 50 * 1024 * 1024
 # against someone posting a feature film for us to decode.
 MAX_DURATION_S = 60.0
 
-# The latency budget, not a quality knob. Each frame is one round trip to the Space at ~1s
-# warm, and the calling backend gives a video upload a 35s deadline (VIDEO_BATCH_DEADLINE_MS
-# in creative-verification.service.ts), sized against the 30s TOTAL_BUDGET_S in run.py.
-# Raising this without raising both of those just converts verdicts into timeouts.
+# The latency budget, not a quality knob. All frames now travel in ONE request rather than one
+# round trip each, so this costs image tokens and generation time rather than round trips --
+# but the calling backend still gives a video upload a bounded deadline (PER_VIDEO_BUDGET_MS
+# in creative-verification.service.ts, 70s) and scoring/vlm.py's VIDEO_TIMEOUT_S sits under it
+# at 60s. Raising this without raising both of those just converts verdicts into timeouts --
+# which is not hypothetical: the still-image versions of those two numbers were once below the
+# model's own latency, and every uncached upload analysis was abandoned for weeks.
+# (An earlier version of this comment sized it against a `TOTAL_BUDGET_S` in run.py. No such
+# constant has ever existed -- there is no overall wall-clock budget on an analysis.)
 #
 # The backend also reserves this many rate-limit units per video before it calls, because the
 # per-key counter is charged per frame. Raising it there is part of raising it here.

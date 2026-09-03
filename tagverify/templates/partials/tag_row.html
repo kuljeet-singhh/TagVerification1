@@ -3,42 +3,11 @@
 <tr id="tag-{{ row.slug }}" class="{{ 'is-revoked' if row.status == 'retired' else '' }}">
   <td><span class="mono">{{ row.slug }}</span></td>
   <td>{{ row.label }}</td>
-  <td class="tnum">{{ row.positives | length }}</td>
-  <td class="tnum">{{ row.negatives | length }}</td>
   <td>
     {% if row.status == 'retired' %}
       <span class="chip">retired</span>
     {% else %}
       <span class="chip chip-accent">active</span>
-      {# A tag written for the VLM, which reads the description. SigLIP cannot score it at
-         all, so `dooh export-packs` refuses rather than shipping an empty pool — say so
-         HERE, where the tag is being looked at, rather than only at the point of publish. #}
-      {% if not row.positives or not row.negatives %}
-        <span class="chip chip-warn"
-              title="No phrases. The VLM reads the description, but SigLIP cannot score this tag — export-packs will refuse until it has phrases or is retired.">
-          VLM only
-        </span>
-      {% endif %}
-      {# publish_state() is None when we cannot tell -- the model did not answer, or it is
-         old enough not to report fingerprints -- and then we say nothing at all. Flagging
-         every row because health timed out would be worse than flagging none.
-
-         Skipped entirely unless SigLIP is scoring: publish_state compares this row against
-         the Space's catalog, and under a VLM that comparison answers a question nobody asked.
-         A tag written for the VLM is live the moment it is saved, so "not live" would be
-         false -- and would send someone to run a publish that changes nothing. #}
-      {% set published = publish_state(row, live_slugs|default(none), live_fingerprints|default(none))
-                         if scorer_name|default('siglip') == 'siglip' else none %}
-      {% if published == 'absent' %}
-        <span class="chip chip-warn" title="Saved, but the running model does not have it yet">
-          not live
-        </span>
-      {% elif published == 'edited' %}
-        <span class="chip chip-warn"
-              title="The running model still has this tag's earlier phrases. Publish to apply the edit.">
-          edit not live
-        </span>
-      {% endif %}
     {% endif %}
   </td>
   <td>
@@ -48,14 +17,22 @@
               hx-target="#tag-{{ row.slug }}" hx-swap="outerHTML">Edit</button>
       <button class="btn btn-danger btn-sm" type="button"
               hx-post="/admin/tags/{{ row.slug }}/retire"
-              hx-confirm="Retire &quot;{{ row.label }}&quot;? It disappears from the catalog on the next export. Screens already blocking it keep working until they are next saved."
+              hx-confirm="Retire &quot;{{ row.label }}&quot;? It leaves the catalog immediately and stops being scored. Screens already blocking it keep working until they are next saved."
               hx-target="#tags-panel" hx-swap="outerHTML">Retire</button>
+    {% else %}
+      {# Outline, not danger, and no hx-confirm: this is the undo, and putting friction on the
+         undo of a mistake is backwards. Retiring is the destructive direction and keeps its
+         confirmation. No Edit here either -- a retired tag's name is not in the catalog
+         fingerprint, so editing it would move nothing. Restore first, then edit. #}
+      <button class="btn btn-outline btn-sm" type="button"
+              hx-post="/admin/tags/{{ row.slug }}/restore"
+              hx-target="#tags-panel" hx-swap="outerHTML">Restore</button>
     {% endif %}
   </td>
 </tr>
 {% if row_warnings %}
   <tr>
-    <td colspan="6">
+    <td colspan="4">
       <div class="callout callout-warn" style="margin:0">
         <ul class="small" style="margin:0; padding-left:18px">
           {% for warning in row_warnings %}<li>{{ warning }}</li>{% endfor %}

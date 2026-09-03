@@ -2,10 +2,12 @@
 
 `dooh export-packs` used to READ inference/packs.json in order to WRITE it: the four
 file-level keys (`$comment`, `prompt_template`, `shared_distractors`, `defaults`) lived only
-there, so render_catalog had to open the old file to preserve them. Inside the Docker image
-that file does not exist -- the Dockerfile copies banding.py and versioning.py out of
-inference/ and nothing else -- so publishing failed in production while working fine from a
-checkout. This table removes the file from the input side.
+there, so render_catalog had to open the old file to preserve them. A deployment never carried
+that file, so publishing failed in production while working fine from a checkout. This table
+removed the file from the input side.
+
+(Historical, all of it: the pack, the export and the publish step went with the ranking model,
+and nothing reads this table today. The migration stays because it has been applied.)
 
 `body` IS TEXT, DELIBERATELY. packs_version hashes the exported file's bytes, so a key
 emitted in a different order is a different pack to every downstream fingerprint: every tag

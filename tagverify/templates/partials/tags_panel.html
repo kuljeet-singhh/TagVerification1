@@ -1,58 +1,11 @@
 {% import "_icons.html" as ico %}
 <div id="tags-panel" class="stack gap-4">
 
-  {# Pending publish is the thing people get wrong. A tag saved here is a database row and
-     nothing more: the model reads its prompts from inference/packs.json at import, so until
-     someone publishes it, the tag does not exist as far as scoring is concerned.
-
-     This used to warn unconditionally. That is worse than useless -- a banner that is always
-     on is one people scroll past, and a tag duly sat unpublished with nothing pointing at it.
-     So it now compares against what the running model actually reports, and says nothing when
-     there is nothing to say. `live_slugs` is None when the model did not answer, and then we
-     claim NOTHING: guessing is how it started lying in the first place.
-
-     TWO groups, because comparing slugs alone missed the commoner case. A tag keeps its slug
-     across an edit, so rewriting every phrase in one left this banner silent while the model
-     went on matching the old ones. `unpublished` is a tag the model has never heard of;
-     `edited` is one it has, under different words. Same remedy, but the second is invisible
-     without a per-tag fingerprint -- see catalog.publish_state. #}
-  {# The entire publish banner is a SigLIP concept: it exists because that model encodes its
-     prompts at import and cannot see Postgres, so a saved tag is not yet a scored tag. A VLM
-     reads its prompt per request, so a saved tag IS live and there is nothing to publish --
-     rendering "not live yet" there would be false, and false in the direction that sends
-     someone off to run a command that no longer does anything. #}
-  {% if scorer_name != 'siglip' %}
-  {% elif live_slugs is none %}
-    <div class="callout callout-warn">
-      <strong>Cannot tell what is live.</strong>
-      The model is not answering, so this list may not match what is actually being scored.
-      Changes take effect only after <code class="mono">dooh export-packs --push</code>,
-      which publishes into the model tier &mdash; the process serving
-      <code class="mono">INFERENCE_URL</code>, not this web app.
-    </div>
-  {% elif unpublished or edited %}
-    <div class="callout callout-warn">
-      <strong>
-        {% if unpublished %}
-          {{ unpublished | length }} tag{{ '' if unpublished | length == 1 else 's' }} not live yet:
-          {% for row in unpublished %}<code class="mono">{{ row.slug }}</code>{{ '' if loop.last else ', ' }}{% endfor %}{{ '. ' if edited else '' }}
-        {% endif %}
-        {% if edited %}
-          {{ edited | length }} edit{{ '' if edited | length == 1 else 's' }} not live yet:
-          {% for row in edited %}<code class="mono">{{ row.slug }}</code>{{ '' if loop.last else ', ' }}{% endfor %}
-          &mdash; the model still has the earlier phrases for
-          {{ 'it' if edited | length == 1 else 'them' }}.
-        {% endif %}
-      </strong>
-      A saved tag is a database row until it is published. Run
-      <code class="mono">dooh export-packs --push</code>: the export writes the pack, the push
-      re-encodes it into the model tier &mdash; the process serving
-      <code class="mono">INFERENCE_URL</code>, <strong>not this web app</strong>. No restart
-      needed; exporting without pushing leaves the running process on its old pack. Then
-      recalibrate, because adding or editing a tag moves every other tag&rsquo;s scores
-      slightly.
-    </div>
-  {% endif %}
+  {# There is no publish banner, and its absence is the point. It used to live here because
+     SigLIP encoded its prompts at import and could not see Postgres, so a saved tag was not
+     yet a scored tag. The scorer reads its prompt per request now: a saved tag IS live, and
+     "not live yet" would be false in the direction that sends someone to run a command that
+     was deleted in f357a1c. #}
 
   {% if tag_warnings %}
     <div class="callout callout-warn">
@@ -70,95 +23,76 @@
         hx-disabled-elt="find button">
     <div>
       <h3>Add a tag</h3>
-      {# The form's SHAPE depends on the scorer, so the form says which one. Without this the
-         phrase fields appear and disappear according to a server-side environment variable and
-         the page gives no reason, which reads as a broken form rather than as a mode. Muted
-         text, not a callout: this is orientation, and colour in this interface means a
-         verdict. #}
+      {# Which model is answering, in one muted line. Not a callout: this is orientation, and
+         colour in this interface means a verdict. The form's shape no longer varies with it —
+         a tag is a name and a sentence whoever is reading them. #}
       {% if not scorer_configured %}
         <p class="small" style="margin-top:3px; color:var(--present-fg)">
           <strong>{{ scorer_label }} is selected but not configured.</strong>
           Nothing can be scored until its API key is set. Tags saved now will still be here.
         </p>
-      {% elif scorer_name == 'siglip' %}
-        <p class="small muted" style="margin-top:3px">
-          <strong>SigLIP is scoring.</strong> It ranks the image against a pool of phrases, so
-          the phrases are the question and are required.
-        </p>
       {% else %}
         <p class="small muted" style="margin-top:3px">
-          <strong>{{ scorer_model }} is scoring.</strong> It reads the description, so phrases
-          are not used &mdash; they stay available for a rollback to SigLIP.
+          <strong>{{ scorer_model }} is scoring.</strong> It reads each tag&rsquo;s name.
         </p>
       {% endif %}
-              <p class="small muted" style="margin-top:3px">
-          A tag is a name and a sentence. The <strong>description</strong> is what the model is
-          actually asked, so name the thing, name its boundary, and say what does
-          <em>not</em> count. It works the moment you save &mdash; there is no publish step.
-        </p>
+      <p class="small muted" style="margin-top:3px">
+        <strong>The name is what the model is asked to look for.</strong> It is sent as
+        <span class="mono">- slug: Name</span>, and nothing else about the tag reaches the
+        model &mdash; so name the category the way you would to someone seeing it for the
+        first time. The description is for the screen owner choosing what to block. Both work
+        the moment you save &mdash; there is no publish step.
+      </p>
     </div>
 
-    {# Label first: the slug is DERIVED from it, so leading with the derived value would ask
-       the reader to work right-to-left. Wide field you type into, narrow computed one beside
-       it. Safe to reorder because the auto-fill listener matches on element id, not position. #}
-    <div class="row gap-3 wrap-row" style="align-items:flex-end">
-      <div class="field" style="flex:1;min-width:200px">
-        <label for="tag-label">Label</label>
-        <input class="input" id="tag-label" name="label" required maxlength="80"
-               placeholder="Pet supplies" autocomplete="off"
-               value="{{ form.label if form else '' }}">
-      </div>
-      <div class="field" style="width:200px">
-        <label for="tag-slug">Slug</label>
-        <input class="input mono" id="tag-slug" name="slug" required maxlength="60"
+    {# The name is the only thing typed; the identifier is DERIVED from it and shown back.
+
+       It used to be a second required field, which asked for a value that is a transform of
+       the one beside it. The override survives the field, though, and is not decoration: the
+       slug is permanent -- it keys this tag's eval folder and is what DOOH stores in
+       devices.blocked_tags, and retiring a tag does not release it -- and 19 of the 24 tags in
+       this catalog were given a slug shorter than their label. "Pharmaceutical and medicine"
+       derives to pharmaceutical_and_medicine; somebody wanted pharma_medicine, and this is
+       where they get it. #}
+    <div class="field">
+      <label for="tag-label">Name</label>
+      <input class="input" id="tag-label" name="label" required maxlength="80"
+             placeholder="Pet supplies" autocomplete="off"
+             value="{{ form.label if form else '' }}"
+             hx-get="/admin/tags/slug-preview"
+             hx-trigger="input changed delay:250ms"
+             hx-target="#tag-slug-preview"
+             hx-swap="innerHTML">
+    </div>
+
+    {# Open already when a rejected submission carried one: an identifier that has been seen,
+       and possibly corrected by hand, must not be buried again on the re-render. #}
+    <div class="field" style="margin-top:-6px">
+      <p class="xs subtle" id="tag-slug-line"
+         {% if form and form.slug %}hidden{% endif %}>
+        Saved as <span id="tag-slug-preview">{% with
+            slug = slug_preview | default(''),
+            label = (form.label if form else '')
+          %}{% include "partials/slug_preview.html" %}{% endwith %}</span>
+        &middot;
+        <button type="button" class="btn-link" id="tag-slug-edit">Edit</button>
+      </p>
+      <div id="tag-slug-override" {% if not (form and form.slug) %}hidden{% endif %}>
+        <label for="tag-slug">Identifier &mdash; permanent, and not editable after saving</label>
+        <input class="input mono" id="tag-slug" name="slug" maxlength="60"
                placeholder="pet_supplies" autocomplete="off" pattern="[a-z][a-z0-9_]*"
-               value="{{ form.slug if form else '' }}"
-               {# A slug that survived a rejection has been seen, and possibly corrected by
-                  hand. Overwriting it from a later label edit would be the surprising move,
-                  so a re-rendered form arrives already 'touched'. #}
-               {% if form and form.slug %}data-touched="1"{% endif %}>
+               value="{{ form.slug if form else '' }}">
       </div>
     </div>
 
     <div class="field">
-      <label for="tag-description">Description</label>
-      <input class="input" id="tag-description" name="description" required maxlength="200"
-             placeholder="What a screen owner sees when choosing what to block."
+      <label for="tag-description">
+        Description &mdash; optional, and shown to screen owners
+      </label>
+      <input class="input" id="tag-description" name="description" maxlength="200"
+             placeholder="Beer, wine and spirits, including bar scenes."
              autocomplete="off" value="{{ form.description if form else '' }}">
     </div>
-
-    {# Collapsed, not removed, when a VLM is scoring. The columns stay populated so a rollback
-       to SigLIP is a config change rather than a re-authoring exercise — and a tag saved
-       without them is flagged "VLM only" in the table, because export-packs will refuse it. #}
-    {%- if true %}<details class="stack gap-3"><summary class="small muted">
-      Phrases &mdash; only used by SigLIP, not by the model currently scoring
-    </summary>{% endif %}
-
-    <div class="row gap-3 wrap-row">
-      <div class="field" style="flex:1;min-width:260px">
-        <label for="tag-positives">Positives &mdash; what we are hunting</label>
-        <textarea class="input" id="tag-positives" name="positives" rows="6"
-                  
-                  placeholder="a bag of dog food&#10;a cat sitting in a pet carrier"
-                  >{{ form.positives if form else '' }}</textarea>
-      </div>
-      <div class="field" style="flex:1;min-width:260px">
-        <label for="tag-negatives">Negatives &mdash; what gets mistaken for it</label>
-        <textarea class="input" id="tag-negatives" name="negatives" rows="6"
-                  
-                  placeholder="a bag of rice&#10;a wild animal in a forest"
-                  >{{ form.negatives if form else '' }}</textarea>
-      </div>
-    </div>
-
-    <div class="field">
-      <label for="tag-rationale">Why these negatives (optional, and worth writing)</label>
-      <textarea class="input" id="tag-rationale" name="rationale" rows="2"
-                placeholder="Records what you measured, so the next person does not undo it."
-                >{{ form.rationale if form else '' }}</textarea>
-    </div>
-
-    {%- if true %}</details>{% endif %}
 
     <div class="row gap-3" style="align-items:flex-end">
       <button class="btn btn-primary" type="submit">
@@ -176,8 +110,7 @@
     <table class="data">
       <thead>
         <tr>
-          <th>Slug</th><th>Label</th><th>Positives</th><th>Negatives</th>
-          <th>Status</th><th></th>
+          <th>Slug</th><th>Label</th><th>Status</th><th></th>
         </tr>
       </thead>
       <tbody>
@@ -185,9 +118,8 @@
           {% include "partials/tag_row.html" %}
         {% else %}
           <tr>
-            <td colspan="6" class="small muted">
-              No tags yet. Run <code class="mono">dooh seed-tags</code> to import the shipped
-              catalog.
+            <td colspan="4" class="small muted">
+              No tags yet. Add one with the form above &mdash; it is live as soon as it saves.
             </td>
           </tr>
         {% endfor %}
@@ -196,7 +128,10 @@
   </div>
 
   <p class="xs subtle">
-    Retiring a tag never deletes it. The slug keeps its labelled eval images and its measured
-    thresholds, and a screen that still blocks it keeps working until it is next saved.
+    Retiring a tag never deletes it, and Restore brings it back. The slug keeps its labelled
+    eval images and its measured thresholds either way, and a screen that still blocks it keeps
+    working until it is next saved. Both directions change what the model is asked, so every
+    creative is analysed once more &mdash; and a calibration measured before the change reads as
+    superseded rather than current.
   </p>
 </div>

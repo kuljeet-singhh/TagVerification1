@@ -12,8 +12,9 @@ verdict can be **`present: null`**, meaning *uncertain — a human has to look*.
 same as absent, and the API, the UI and the docs all go out of their way to keep the two apart.
 
 It also **owns the tag catalog**. Tags are created and edited here — through the admin UI or the
-JSON API — and published to the model as one pack. The sibling `dooh-backend` proxies those
-writes and enforces the verdicts; it never mirrors the catalog.
+JSON API — and a saved tag is live immediately, because the model is handed the catalog as its
+prompt on every request. The sibling `dooh-backend` proxies those writes and enforces the
+verdicts; it never mirrors the catalog.
 
 ---
 
@@ -45,13 +46,19 @@ Two paths run through this repo. The first answers a question about a creative:
                                     │
               ┌─────────────────────┼──────────────────────┐
               ▼                     ▼                      ▼
-        result cache          thresholds            SigLIP 2 detector
-        (Postgres)            (Postgres)            (HF Space, inference/)
-                                    │
+        result cache        calibration state         the VLM
+        (Postgres,           (Postgres,               (per-request prompt,
+         RAW answers)         has this been            built from the catalog)
+              │               measured?)
+              └─────────────────────┼──────────────────────┘
                                     ▼
-                          inference/banding.py       ← the verdict rule,
-                                                       shared by all three callers
+                          tagverify/tags/decide.py    ← the verdict rule
 ```
+
+The cache holds **raw answers, not verdicts**, and the rule is re-applied on every read — so a
+change to `decide.py` reaches creatives that were analysed months ago. That is the whole reason
+`decision_version` is published: a consumer caching our *decided* verdicts has to key on it, or
+the retroactivity stops at the HTTP boundary.
 
 Both entry points — the browser playground and an API key holder — run the *same* pipeline.
 There is no demo path that behaves differently from the real one.
@@ -80,11 +87,11 @@ across a tier boundary. See `docs/VLM_SCORING.md`.
 | Path | What it is |
 |---|---|
 | `tagverify/` | The web application: FastAPI, Jinja2 templates, HTMX. One process serves the API, the playground, the docs and the admin. |
-| `tagverify/tags/` | The catalog: `catalog.py` validates and does CRUD over `content_tags`, `packs.py` is pure read/write of the pack file, `publish.py` renders the catalog and pushes it to the model, `decide.py` holds the thresholds side of `decision_version`. |
+| `tagverify/tags/` | The catalog: `catalog.py` validates and does CRUD over `content_tags`; `decide.py` turns a raw answer into a verdict, owns `decision_version`, and is the only place staleness is judged (`effective_calibrated`). |
 | `tagverify/scoring/` | The scorer. `prompt.py` is the question and the JSON schema; `vlm.py` and `gemini.py` are the two providers, sharing everything but the SDK call; `fake.py` answers from fixtures for offline work; `registry.py` resolves `SCORER` to one of them. |
 | `tagverify/analyze/video.py` | Decoding a video and choosing which frames are worth scoring. Keyframes, then a colour-aware dedupe. |
-| `tagverify/analyze/aggregate.py` | The rule that collapses per-frame verdicts into one per tag. Pure, like `banding.py`, and tested the same way. |
-| `inference/` | **Data only.** The labelled eval images and the measurements taken over them, including `gate_cache.json` — the SigLIP baseline the removal was judged against. The detector itself is preserved on `main`. |
+| `tagverify/analyze/aggregate.py` | The rule that collapses per-frame verdicts into one per tag. Pure — no I/O, no database — so it is tested exhaustively and cheaply. |
+| `inference/` | **Data only — no code runs from here.** `eval/` holds the labelled images; `gate_cache.json` banks the SigLIP baseline the removal was judged against (146 cross-tag false blocks, 0.688 mean recall over 466 images); `phrase_packs_archive.json` holds the packs themselves, dumped the moment before migration 0003 dropped the columns. The measurement outlives the code. The detector is preserved on `main`. |
 | `migrations/` | Alembic. Brings an **existing** database forward; a new one is provisioned from `docs/schema.sql`. |
 | `tests/` | pytest. Runs against the ASGI app in-process; tests needing the database or the model skip cleanly when those are not configured. |
 
@@ -92,8 +99,9 @@ across a tier boundary. See `docs/VLM_SCORING.md`.
 
 | File | What it is |
 |---|---|
-| [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Exhaustive `file:line` reference for every module, route, table and constant. It describes; it does not govern. |
-| [`DEPLOY.md`](docs/DEPLOY.md) | Deployment: the three targets (repo, HF Space subtree push, container), regions, keepalive, credential rotation. |
+| [`VLM_SCORING.md`](docs/VLM_SCORING.md) | **Start here for how scoring works.** The design of the reading-model path: why a ranking model was replaced, the prompt, the schema, the cost model, and §5.2's plan for an eval harness that writes calibration back. |
+| [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Exhaustive `file:line` reference for every module, route, table and constant. **Stale in places** — it predates the VLM rewrite and still documents threshold routes and partials that no longer exist. It describes; it does not govern. |
+| [`DEPLOY.md`](docs/DEPLOY.md) | Deployment, end to end: installing and supervising the process, the environment it needs, provisioning the database, issuing keys, and what to check afterwards. |
 | [`schema.sql`](docs/schema.sql) | The schema as it should *be* — provisions a new database by hand. |
 | [`TAG_PIPELINE_IN_PRODUCTION.md`](docs/TAG_PIPELINE_IN_PRODUCTION.md) | The operational counterpart to `DEPLOY.md`: what bites you after the commands have run, and why. |
 | [`TAG_CRUD_IMPLEMENTATION.md`](docs/TAG_CRUD_IMPLEMENTATION.md) | The authority on what actually shipped for tag CRUD, and what implementation changed about the plan. |
@@ -101,10 +109,12 @@ across a tier boundary. See `docs/VLM_SCORING.md`.
 | [`PORTING_THE_TAG_CATALOG.md`](docs/PORTING_THE_TAG_CATALOG.md) | How much of the editable-catalog feature carries to another project: the CRUD half ports as-is, the publish half does not. |
 | [`ADMIN_CREATIVE_REVIEW_SURFACE.md`](docs/ADMIN_CREATIVE_REVIEW_SURFACE.md) | Planned, not started — a DOOH admin "this ad needs review" surface. Needs no change in this repo. |
 
-**Two virtualenvs, deliberately.** `.venv` at the repo root serves HTTP; `inference/.venv` runs
-the model. Never add `torch`, `transformers` or `gradio` to `pyproject.toml`, and never import
-`inference.detector` from `tagverify/` — the split is what keeps a web deploy from pulling 2GB of ML
-wheels. The one shared file is `inference/banding.py`, which imports nothing.
+**One virtualenv, now.** There used to be two on purpose — `.venv` served HTTP and
+`inference/.venv` ran a SigLIP 2 model on a Hugging Face Space, and the rule was never to let the
+ML stack cross into the web tier. A model that reads its prompt per request needs no local
+weights, so that split, the Space and the publish step between them are all gone: one venv, one
+`pyproject.toml`, one deploy. The heaviest thing left is `av` for video decode — **no `torch`, no
+`transformers`, no `gradio`**, and it should stay that way.
 
 ## Setup
 
@@ -156,21 +166,22 @@ how a database that already holds data gets there. **A new column belongs in bot
 provisioning and migrating diverge. Alembic reads `DATABASE_URL` through the app's own settings
 (`migrations/env.py`), so the credential never lands in a tracked file.
 
-### 6. Run
+### 4. Run
 
 ```bash
 make dev              # http://127.0.0.1:8000
 ```
 
-Then confirm both tiers are actually reachable — without starting a second server:
+Then confirm the database and the scorer are actually reachable — without starting a second
+server:
 
 ```bash
 dooh health
 ```
 
 It prints the same report as `GET /api/v1/health`, with `database` and `inference` called out
-separately. `degraded` with `inference.warming: true` is normal for the first minute against a
-cold Space.
+separately. `inference` names the scorer that is switched on and whether it is configured, so a
+missing API key shows up here rather than at the first upload.
 
 ## Configuration
 
@@ -183,22 +194,35 @@ Monitoring you cannot reach is not monitoring.
 |---|---|---|
 | `DATABASE_URL` | yes | Postgres. Use the **pooled** connection string, and keep it in the same region as the app — see the region warning in `docs/DEPLOY.md`. |
 | `ADMIN_PASSWORD` | yes, in practice | Gates `/admin`. **Unset means refused, never open.** |
+| `SCORER` | no | `vlm` (default) or `fake`. `fake` answers from a fixture — no key, no network, no spend — for offline work and the test suite. **Never deploy it.** `siglip` was the third value and is gone. |
+| `VLM_PROVIDER` | with `SCORER=vlm` | `anthropic` (default) or `gemini`. Both share the prompt, the schema and every failure rule; only the SDK call differs. |
+| `VLM_MODEL` | with `SCORER=vlm` | Defaults to `claude-opus-5`. **Set it together with the provider** — it is deliberately not defaulted per provider, because a model id that silently does not match its provider shows up as a bill rather than as an error. |
+| `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | one of them | Whichever the provider needs. Use a **paid** key: these are other companies' commercial creatives, and free tiers commonly train on submitted content. |
 | `LOG_LEVEL` | no | Defaults to `INFO`. |
 | `PLAYGROUND_RATE_LIMIT_PER_MIN` | no | Defaults to 20. The playground carries no API key by design, so it is limited per IP. |
 | `ADMIN_LOGIN_ATTEMPTS_PER_MIN` | no | Defaults to 5. |
 
+An unrecognised `SCORER` reports *not configured* rather than falling back to a scorer nobody
+asked for — scoring with something other than what was requested is the sort of thing that gets
+noticed a month later.
+
 ## Commands
 
-The `dooh` CLI, in roughly the order a catalog change moves through it:
+The `dooh` CLI is four commands. It used to be nine, and the ordering of that list mattered
+because a catalog change had to be walked from Postgres to the model by hand; nothing needs
+walking now.
 
 ```bash
 dooh create-key "Client name"     # issue an API key (printed once, only a hash is stored)
-dooh gate                         # SigLIP vs VLM over the labelled eval set
+dooh gate                         # score the labelled eval set and compare against the baseline
 dooh health                       # the /api/v1/health report, without a server
 dooh prune-usage                  # drop expired rate-limit rows
 ```
 
-
+**Five commands are gone** with the ranking model: `seed-tags`, `seed-thresholds`,
+`export-packs`, `push-packs` and `apply-calibration`. Every one existed to carry a phrase pack
+from Postgres to a machine that could not read Postgres, or to measure the cutoffs that turned
+its scores into verdicts. A model that reads its prompt per request needs neither.
 
 **`create-key`** takes `--rate-limit N` (default 60) and `--tags-write`, which adds the
 `tags:write` scope. Issue that as a **separate key** — do not add the scope to a key already in
@@ -208,28 +232,57 @@ different blast radii.
 
 ## Adding or changing a tag
 
-Through the admin UI at **`/admin?tab=tags`** or the JSON API. A tag is three fields:
+Through the admin UI at **`/admin?tab=tags`** or the JSON API. A tag is three fields; the admin
+form asks for a name, and takes the other two on trust:
 
 | | |
 |---|---|
+| `label` | The name, and **this is the prompt**. It reaches the model as `- alcohol: Alcoholic content` and nothing else about the tag does. Also what a screen owner sees when choosing what to block. |
+| `description` | **Optional.** Shown to the screen owner beneath the name; a tag without one shows just its name. **Not sent to the model**; editing it moves no fingerprint and re-scores nothing. |
 | `slug` | `^[a-z][a-z0-9_]*$`, and it **cannot be renamed**. A slug in use *or retired* is refused, because DOOH stores slug strings and reusing one silently re-points existing screen rules. |
-| `label` | What a screen owner sees. |
-| `description` | **This is the prompt.** It is sent to the model verbatim and is the whole of what is asked. |
+
+**The admin form derives the slug from the label** (`catalog.slugify` — the only implementation;
+there used to be two, both in JavaScript, neither authoritative) and shows it back as you type,
+from the server. There is an `Edit` beside it, and it is not decoration: most tags in this
+catalog carry a slug shorter than their label — `alcohol` for "Alcoholic content",
+`pharma_medicine` for "Pharmaceutical and medicine". The value is permanent and retiring a tag
+does not release it, so the preview is the only moment anyone gets to notice it is wrong.
+
+The JSON API still requires an explicit `slug`. A caller already has an identifier in mind, or
+it would not be calling.
 
 **Save is live.** No publish, no calibration, no eval images.
 
-**Write the description as a specification, not a blurb.** It is the only knob — there is no
-threshold to tune afterwards — so name the thing, name its boundary, and say what does *not*
-count. The exclusion clause is the part that earns its keep: it is what stops an alcohol-free
-beer, or a wine-themed logo, being blocked as alcohol. It is the direct successor to the hard
-negative phrases, and those were where the measured accuracy came from.
+**The name is the only knob.** Everything about *how* to decide lives in
+`scoring/prompt.py`'s system instruction — judge only what is visible, read labels and
+packaging, count it present if it appears anywhere however small, answer `null` rather than
+guess. The catalog supplies only *which* categories, one line each. So name a tag the way you
+would to someone seeing it for the first time, and fix a misfiring one by renaming it.
 
-**Retire, never delete.** `retire_tag` sets `status='retired'`; there is no hard delete. A
-deleted slug is stranded in DOOH's `devices.blocked_tags`, where every upload then falls
-through to `NOT_VERIFIED` forever.
+**What a name cannot carry is a boundary**, and that is the accepted cost of this shape. There
+is nowhere to write "packaged juice counts" or "alcohol-free 0.0% beer does not", so the model
+decides those cases and its answer can move when the model version does. Where two categories
+overlap — `junk_food` and `restaurant_dining`, `protein_supplements` and `pharma_medicine` —
+expect both to fire on the ambiguous creative. `dooh gate` over `inference/eval/` is how you
+find out; see [Testing](#testing).
 
-`positives` and `negatives` are still accepted and still stored, unused. They are the rollback
-path to `main`, where the ranking model still needs them.
+**Retire, never delete — and retirement is reversible.** `retire_tag` sets
+`status='retired'`; there is no hard delete. A deleted slug is stranded in DOOH's
+`devices.blocked_tags`, where every upload then falls through to `NOT_VERIFIED` forever.
+
+`restore_tag` puts a retired tag back, from the Restore button on its row in the admin tag
+table. It revives the *same* row, so it is not a way to release a slug to a different tag —
+the reservation above still holds. Restoring re-checks the `MAX_TAGS` active cap, which
+`validate_tag` only applies on create. Both directions move `packs_version`, so every cached
+verdict re-keys and each creative is analysed once more; and a calibration measured before the
+round trip comes back reading superseded, which is `effective_calibrated` doing its job.
+
+`positives`, `negatives`, `rationale` and `sigmoid_floor` were dropped from `content_tags` in
+migration 0003. They were the rollback path to `main`, and `development` is not rolling back:
+`SCORER` no longer accepts `siglip`. The packs themselves — 158 positives and 179 mirrored
+negatives across 24 tags, with the measurements that justified them — are kept in
+`inference/phrase_packs_archive.json`, beside `gate_cache.json`. The API still accepts the four
+fields and ignores them, so DOOH's tag admin keeps working until it drops them too.
 
 ## Testing
 
@@ -237,28 +290,33 @@ path to `main`, where the ranking model still needs them.
 make check              # ruff + the full pytest suite — run this before committing
 make test-fast          # the pure decision rules and intake: no DB, no model, no network
 make typecheck          # mypy, on demand
-make inference-smoke    # 17 golden ML cases; only needed if you touched inference/
 ```
 
 `make check` is **lint plus tests only** — `typecheck` is deliberately not folded into it,
 because mypy is not clean yet and a red `check` that everyone learns to ignore is worse than no
 target at all. Fold it in once it passes.
 
-**There is no CI.** `.github/workflows/` holds one job, `keepalive.yml`, which pings the Space
-every six hours so a free Space does not sleep. Nothing runs lint or tests on push — `make
-check` on your machine is the gate.
+**There is no CI.** `.github/workflows/` is empty — nothing runs lint or tests on push, so
+`make check` on your machine is the only gate there is.
 
-The suite is 18 files: `tests/api/` for the JSON API, `tests/support/` for shared helpers (an
-in-memory MP4 encoder, so video tests need neither fixtures on disk nor a network), and the rest
-at the top level. Two markers in `tests/conftest.py` gate the rest: `needs_db` skips when
-`DATABASE_URL` is unset and `needs_inference` when no REAL scorer is configured — the
-suite pins `SCORER=fake`, which is configured by definition, so a test asserting a genuine
-detection has to skip rather than assert a tautology.
-Both read through `Settings`, not `os.environ`, so your `.env` counts.
+The suite runs **in-process** against the ASGI app over `httpx.ASGITransport`: no server, no
+port. `tests/api/` covers the JSON API, `tests/support/` holds shared helpers (an in-memory MP4
+encoder, so video tests need neither fixtures on disk nor a network), and the rest sit at the top
+level. Two markers in `tests/conftest.py` gate what cannot always run: `needs_db` skips when
+`DATABASE_URL` is unset, and `needs_inference` when no **real** scorer is configured — the suite
+pins `SCORER=fake`, which is configured by definition, so a test asserting a genuine detection
+has to skip rather than assert a tautology. Both read through `Settings`, not `os.environ`, so
+your `.env` counts.
 
-`tests/test_banding.py` is the highest-value file in the repo. If you change how a verdict is
-decided, it should fail. If it doesn't, the test is wrong. `tests/test_aggregate.py` is its
-counterpart for video: if you change how frames combine, that one should fail.
+That pin is an unconditional `os.environ["SCORER"] = "fake"`, not a `setdefault`. A real
+environment variable outranks `.env.local`, and this is the only way to stop a developer's own
+configuration deciding what the suite tests — which had already happened, turning ten tests red
+on one machine and green on another.
+
+`tests/test_aggregate.py` is the highest-value file in the repo. If you change how video frames
+combine, it should fail; if it doesn't, the test is wrong. Its former counterpart
+`tests/test_banding.py` was deleted along with the rule it guarded — there is no score to band
+any more.
 
 ## The API
 
@@ -275,15 +333,19 @@ Full reference at `/docs` in the running app — that is a hand-written page; Fa
 | `POST` | `/api/v1/tags` | `tags:write` |
 | `PATCH` | `/api/v1/tags/{slug}` | `tags:write` |
 | `DELETE` | `/api/v1/tags/{slug}` (retires) | `tags:write` |
-| `POST` | `/api/v1/tags/publish` | `tags:write` |
 
 Keys go in `x-api-key` or `Authorization: Bearer`. The `tags:write` routes accept **either** a
 scoped API key **or** a logged-in admin session with a valid CSRF token, which is what lets the
 admin UI and an integrator share one implementation. A plain analyze key carries no scopes and
 is refused, with an error that names the scope it lacks rather than a bare 403.
 
-Write handlers return `"pending_publish": true` and deliberately do **not** reset any cache — a
-row that cannot reach the model yet has no stale cache to clear. Only `POST /tags/publish` does.
+There is **no publish endpoint**. A saved tag is live at the next request, so there is nothing to
+publish and nothing to reset. Write handlers still return `"pending_publish": true`, which is now
+a formality kept only because `dooh-backend` parses for it — do not build anything new on it.
+
+Un-retiring is admin-only. `POST /admin/tags/{slug}/restore` has no `/api/v1` counterpart, by
+design: restoring re-checks the active-tag cap and revives a specific row, which is a decision
+someone should be looking at a screen to make.
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/analyze \
@@ -307,7 +369,7 @@ curl -X POST http://localhost:8000/api/v1/analyze \
     "tag": "alcohol",
     "present": true,
     "evidence": {
-      "crop": [0, 0.5, 0.5, 1],
+      "top_phrase": "a woman holding two steins of beer",
       "frame": { "index": 2, "timestamp_s": 2.0 }   // ← at which second
     }
   }],
@@ -320,11 +382,15 @@ curl -X POST http://localhost:8000/api/v1/analyze \
   "results": [{
     "tag": "alcohol",
     "present": true,          // true | false | null  ← null means NEEDS A HUMAN
-    "score": 0.977,
-    "confidence": "high",
-    "decided_by": "siglip",   // or "sigmoid_floor" when the absolute veto fired
-    "calibrated": false,      // ← the thresholds were never measured; this is a guess
-    "evidence": { "top_phrase": "a glass of beer with foam", "crop": [0, 0.5, 0.5, 1] }
+    "score": 0.977,           // the model's confidence in its OWN answer. Nothing enforces on it.
+    "confidence": "high",     // high | medium | low, bucketed from score. Triage only.
+    "decided_by": "vlm",
+    "calibrated": false,      // ← never measured, or measured then reworded; either way a guess
+    "evidence": {
+      "top_phrase": "a woman holding two steins of beer",   // what it SAW
+      "crop": null,           // null from this scorer — never 0
+      "sigmoid": null
+    }
   }],
   "uncalibrated_tags": ["alcohol"]
 }
@@ -361,7 +427,7 @@ Two things to know before you do:
 - **Do not add `--proxy-headers` for direct LAN access.** It makes uvicorn trust
   `X-Forwarded-For`, so any device on the network could spoof its IP and walk past the per-IP
   playground rate limit. Use it only behind a real reverse proxy, with `--forwarded-allow-ips`
-  set to that proxy's address. (The `Dockerfile` does set it, correctly — there is a proxy there.)
+  set to that proxy's address — never `*`, which trusts the header from anyone.
 - **`/admin` is reachable too.** The session cookie is issued without `Secure` over plain HTTP
   (correct — a `Secure` cookie would be silently dropped and login would appear to do nothing),
   which also means the password crosses the network in the clear. Fine on a trusted office LAN;
@@ -402,18 +468,34 @@ Reaching the router but nothing else is the signature.
 ## Things worth knowing before you change anything
 
 **Retire, never delete.** A hard delete strands the slug in DOOH's `devices.blocked_tags` and
-every upload against that screen falls through to `NOT_VERIFIED` forever.
+every upload against that screen falls through to `NOT_VERIFIED` forever. Retirement itself is
+reversible — `restore_tag`, and the Restore button on a retired row — because the row and its
+eval images survive it. That is what makes retiring the safe direction. Note the stranding above
+is not unique to deleting: a retired tag leaves `GET /api/v1/tags` too, so DOOH cannot tell the
+two apart. What a hard delete would additionally lose is the slug reservation, and with it the
+guarantee that a reused name cannot inherit another tag's labelled images and measurements.
 
-**`decision_version` fingerprints the other half — the rule and the cutoffs.** `packs_version`
-tells a caller when the model's numbers changed; this tells them when the way those numbers are
-read changed. Both are needed, and the gap was not academic: an integrator caching our verdicts
-keyed on the pack alone kept serving a refusal we had already decided was wrong, and never
-called back to find out — quietly undoing the retroactivity the raw-score cache exists to
-provide. It is a one-way hash, so it exposes no thresholds. It also answers *"is my change
-live?"*: `decision.rule` in `/api/v1/health` is computed from the bytes of the banding module
-this process **loaded**, once, at import. Compare it with `shasum -a 256 inference/banding.py`
-— if they differ, the server is stale and needs restarting. A server started without `--reload`
-once served a superseded rule for hours with nothing anywhere saying so.
+**`decision_version` fingerprints the other half — how the answer is read.** `packs_version`
+covers the *question* (the model id, the prompt, the schema, and every active tag's slug and
+name); `decision_version` covers the *rule that interprets the reply*. Both are needed, and the
+gap was not academic: an integrator caching our verdicts keyed on the pack alone kept serving a
+refusal we had already decided was wrong, and never called back to find out — quietly undoing
+the retroactivity the raw-answer cache exists to provide. It is a one-way hash, so it exposes
+nothing about the rule itself.
+
+It also answers *"is my change live?"*. `decision.rule` in `/api/v1/health` is a hash of the
+bytes of `tagverify/tags/decide.py` **as this process loaded them**, once, at import. If it does
+not move after you edit that file, the server is stale and needs restarting — a server started
+without `--reload` once served a superseded rule for hours with nothing anywhere saying so.
+
+**Every tag currently reads `calibrated: false`, and that is honest rather than broken.**
+Nothing writes `tag_thresholds` today — `apply-calibration` went with the ranking model — so no
+tag has a current measurement, and an uncalibrated verdict is stated as the educated guess it
+is. A measurement taken against a different `packs_version` is *stale*, not calibrated: the
+prompts were reworded underneath the answer. That comparison is `decide.effective_calibrated`
+and it lives in exactly one place, because it used to be written out three times and one of the
+copies disagreed with the other two for every stale row. `docs/VLM_SCORING.md` §5.2 is the plan
+for an eval harness that writes those columns back.
 
 **An unknown tag is an error, never a silent skip.** If a caller misspells `alcohol` the whole
 request is refused. "We didn't check" and "we checked and it's clean" mean opposite things.
@@ -421,12 +503,14 @@ request is refused. "We didn't check" and "we checked and it's clean" mean oppos
 **The media is never stored.** Only its sha256, which is enough for dedupe, caching and an
 audit trail. Video is decoded from an in-memory buffer and never touches the disk either.
 
-**A video is present if ANY frame is present.** Each sampled frame is scored and *decided*
-independently, and only then are the verdicts collapsed: present beats uncertain beats absent,
-and the highest-scoring frame inside the winning band supplies the evidence. Deciding first is
-what matters — the sigmoid floor is a per-frame veto, so ranking frames by raw score would let
-a vetoed 0.92 frame beat a genuine 0.60 one and reintroduce "a mountain reads as alcohol" one
-level up. See `tagverify/analyze/aggregate.py`.
+**A video is present if ANY frame is present.** Each sampled frame is decided independently, and
+only then are the verdicts collapsed: present beats uncertain beats absent, and within the
+winning band the highest-scoring frame supplies the evidence. **Band first, score only as the
+tie-break** — ranking by raw score alone would let a confident *absent* outrank a genuine
+*present* and report a creative nobody actually cleared. All six frames now travel in one
+request, but that is a transport detail: the schema carries a verdict per frame per tag, the
+prompt asks for per-frame independence in as many words, and the collapse lives in
+`tagverify/analyze/aggregate.py` and nowhere else.
 
 **A frame we could not analyse fails the whole request.** There is no partial video result.
 Returning verdicts computed over four frames of six, with nothing saying so, is "we didn't
