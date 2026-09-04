@@ -13,8 +13,8 @@ same as absent, and the API, the UI and the docs all go out of their way to keep
 
 It also **owns the tag catalog**. Tags are created and edited here — through the admin UI or the
 JSON API — and a saved tag is live immediately, because the model is handed the catalog as its
-prompt on every request. The sibling `dooh-backend` proxies those writes and enforces the
-verdicts; it never mirrors the catalog.
+prompt on every request. A consumer reads the catalog per request and never mirrors it, so
+there is no second copy anywhere that can fall behind this one.
 
 ---
 
@@ -66,15 +66,20 @@ There is no demo path that behaves differently from the real one.
 The second path decides *what the questions can be* — the catalog the model is asked about:
 
 ```
-   admin UI    ─┐
-                ├──►   content_tags   ──►  read per request, as the prompt
-   DOOH admin  ─┘      (Postgres)
-   (tags:write)
+   admin UI          ─┐
+                      ├──►   content_tags   ──►  read per request, as the prompt
+   API (tags:write)  ─┘      (Postgres)
 ```
 
 **A saved tag is live.** There is no publish step, no pack file and no fingerprint to push,
 because the model reads its prompt on every request — so the database is the only source of
-truth and nothing can be stale relative to it. A tag written a second ago is in the next call.
+truth *for what the model is asked*, and nothing can be stale relative to it. A tag written a
+second ago is in the next call.
+
+The one qualifier is cosmetic and deliberate: `tagverify/tags/groups.py` holds a hardcoded list
+of slugs that lays the playground's tag picker out in four sections. It never reaches the API or
+the prompt, and a catalog tag missing from it still appears — in an "Other" group — so a new tag
+can look untidy there but can never be silently hidden.
 
 That was not always true. Until 2026-09-01 a SigLIP 2 detector ranked each image against a pool
 of hand-written phrases encoded into embeddings at startup, on a machine with no database
@@ -87,20 +92,25 @@ across a tier boundary.
 | Path | What it is |
 |---|---|
 | `tagverify/` | The web application: FastAPI, Jinja2 templates, HTMX. One process serves the API, the playground, the docs and the admin. |
-| `tagverify/tags/` | The catalog: `catalog.py` validates and does CRUD over `content_tags`; `decide.py` turns a raw answer into a verdict, owns `decision_version`, and is the only place staleness is judged (`effective_calibrated`). |
+| `tagverify/tags/` | The catalog: `catalog.py` validates and does CRUD over `content_tags`; `decide.py` turns a raw answer into a verdict, owns `decision_version`, and is the only place staleness is judged (`effective_calibrated`); `groups.py` is presentation-only section ordering for the playground picker. |
 | `tagverify/scoring/` | The scorer. `prompt.py` is the question and the JSON schema; `vlm.py` and `gemini.py` are the two providers, sharing everything but the SDK call; `fake.py` answers from fixtures for offline work; `registry.py` resolves `SCORER` to one of them. |
+| `tagverify/analyze/intake.py` | The one intake path: sniffs the media kind from the bytes, enforces the size caps, hashes, and fetches a `media_url` behind an SSRF guard. Every entry point goes through it — the playground used to carry a second partial copy, which is exactly how two entry points drift apart. |
 | `tagverify/analyze/video.py` | Decoding a video and choosing which frames are worth scoring. Keyframes, then a colour-aware dedupe. |
 | `tagverify/analyze/aggregate.py` | The rule that collapses per-frame verdicts into one per tag. Pure — no I/O, no database — so it is tested exhaustively and cheaply. |
-| `inference/` | **Data only — no code runs from here.** `eval/` holds the labelled images; `gate_cache.json` banks the SigLIP baseline the removal was judged against (146 cross-tag false blocks, 0.688 mean recall over 466 images); `phrase_packs_archive.json` holds the packs themselves, dumped the moment before migration 0003 dropped the columns. The measurement outlives the code. The detector is preserved on `main`. |
-| `migrations/` | Alembic. Brings an **existing** database forward; a new one is provisioned from the schema file. |
+| `inference/` | **Data only — the sole `.py` here is `__init__.py`.** `eval/` holds the labelled images; `gate_cache.json` banks the SigLIP baseline the removal was judged against (146 cross-tag false blocks, 0.688 mean recall over 466 images); `phrase_packs_archive.json` holds the packs themselves, dumped the moment before migration 0003 dropped the columns. `calibration.json`, `sweep.json` and `gate.json` are the runs behind those numbers. The measurement outlives the code. The detector is preserved on `main`. |
+| `migrations/` | Alembic. Brings an **existing** database forward — see [Setup](#3-create-the-database), because it cannot currently create a new one. |
 | `tests/` | pytest. Runs against the ASGI app in-process; tests needing the database or the model skip cleanly when those are not configured. |
 
 **One virtualenv, now.** There used to be two on purpose — `.venv` served HTTP and
 `inference/.venv` ran a SigLIP 2 model on a Hugging Face Space, and the rule was never to let the
 ML stack cross into the web tier. A model that reads its prompt per request needs no local
 weights, so that split, the Space and the publish step between them are all gone: one venv, one
-`pyproject.toml`, one deploy. The heaviest thing left is `av` for video decode — **no `torch`, no
-`transformers`, no `gradio`**, and it should stay that way.
+`pyproject.toml`, one deploy. The heaviest dependency left is `av` for video decode — **`torch`,
+`transformers` and `gradio` are in no dependency list any more**, and it should stay that way.
+
+That is a claim about `pyproject.toml`, not about your disk. `inference/.venv/` may still be
+sitting in your checkout with all three installed — it is gitignored, nothing reads it, and it is
+safe to delete.
 
 ## Setup
 
@@ -133,13 +143,6 @@ environment variables, so under `make dev` a key set in `.env` does win.)
 
 ### 3. Create the database
 
-A **new** database is provisioned from the schema file:
-
-```bash
-export $(grep -E '^DATABASE_URL=' .env)   # psql reads the shell, not .env
-psql "$DATABASE_URL" -f docs/schema.sql
-```
-
 An **existing** database is brought forward with Alembic:
 
 ```bash
@@ -147,10 +150,27 @@ make migrate          # alembic upgrade head
 make migrate-sql      # the same, printed as SQL instead of applied — a dry run
 ```
 
-The two are not alternatives. `schema.sql` describes the destination; the migrations describe
-how a database that already holds data gets there. **A new column belongs in both files**, or
-provisioning and migrating diverge. Alembic reads `DATABASE_URL` through the app's own settings
-(`migrations/env.py`), so the credential never lands in a tracked file.
+Alembic reads `DATABASE_URL` through the app's own settings (`migrations/env.py`), so the
+credential never lands in a tracked file.
+
+> **A new database cannot currently be provisioned from this repo.** `docs/schema.sql` used to
+> create one and the `docs/` directory was deleted in `98ae66e`. The migrations are not a
+> substitute: `0001` runs `add_column` against an `api_keys` table that must already exist, and
+> `0002` creates only `pack_header`. Nothing calls `Base.metadata.create_all`. So `alembic
+> upgrade head` against an empty database fails, and there is no second command that would have
+> worked first.
+>
+> The surviving description of the destination is `tagverify/db/models.py` — seven tables:
+> `api_keys`, `tag_thresholds`, `analyses`, `eval_images`, `usage_counters`, `content_tags`,
+> `pack_header`. Restoring a provisioning step from those models is an **open job**, not
+> something this README can talk you through.
+>
+> Until it is done, **a new column belongs in the models and in a migration**, which is where
+> the old "both files" rule now lands. Several `docs/*` paths are still cited from `Makefile`,
+> `pyproject.toml`, `tagverify/config.py`, `tagverify/api/v1/tags.py`, `tagverify/db/models.py`
+> and `AGENTS.md`; all of them are dead links.
+
+Once the database exists, the rest of this guide works normally.
 
 ### 4. Run
 
@@ -205,6 +225,13 @@ dooh health                       # the /api/v1/health report, without a server
 dooh prune-usage                  # drop expired rate-limit rows
 ```
 
+**`gate`** takes `--arm` (`vlm` | `siglip` | `both`, default `both` — the `siglip` arm is
+report-only, replayed from `inference/gate_cache.json` and never re-scored, because there is no
+ranking model left to run), `--limit N` for a smoke run over the first N images, `--report` to
+print from cache without scoring anything, and `--disagreements` to list the images whose verdict
+contradicts their label. It gates on **cross-tag false blocks**, with mean recall as the second
+axis, so a gain bought by wrecking the other one reports MIXED rather than PASS.
+
 **Five commands are gone** with the ranking model: `seed-tags`, `seed-thresholds`,
 `export-packs`, `push-packs` and `apply-calibration`. Every one existed to carry a phrase pack
 from Postgres to a machine that could not read Postgres, or to measure the cutoffs that turned
@@ -223,9 +250,9 @@ form asks for a name, and takes the other two on trust:
 
 | | |
 |---|---|
-| `label` | The name, and **this is the prompt**. It reaches the model as `- alcohol: Alcoholic content` and nothing else about the tag does. Also what a screen owner sees when choosing what to block. |
-| `description` | **Optional.** Shown to the screen owner beneath the name; a tag without one shows just its name. **Not sent to the model**; editing it moves no fingerprint and re-scores nothing. |
-| `slug` | `^[a-z][a-z0-9_]*$`, and it **cannot be renamed**. A slug in use *or retired* is refused, because DOOH stores slug strings and reusing one silently re-points existing screen rules. |
+| `label` | The name, and **this is the prompt**. It reaches the model as `- alcohol: Alcoholic content` and nothing else about the tag does. Also what an operator sees when choosing what to block. |
+| `description` | **Optional.** Shown to the operator beneath the name; a tag without one shows just its name. **Not sent to the model**; editing it moves no fingerprint and re-scores nothing. |
+| `slug` | `^[a-z][a-z0-9_]*$`, and it **cannot be renamed**. A slug in use *or retired* is refused, because consumers store slug strings in their own block rules and reusing one would silently re-point them at a different tag. |
 
 **The admin form derives the slug from the label** (`catalog.slugify` — the only implementation;
 there used to be two, both in JavaScript, neither authoritative) and shows it back as you type,
@@ -253,13 +280,14 @@ expect both to fire on the ambiguous creative. `dooh gate` over `inference/eval/
 find out; see [Testing](#testing).
 
 **Retire, never delete — and retirement is reversible.** `retire_tag` sets
-`status='retired'`; there is no hard delete. A deleted slug is stranded in DOOH's
-`devices.blocked_tags`, where every upload then falls through to `NOT_VERIFIED` forever.
+`status='retired'`; there is no hard delete. A deleted slug is stranded in whatever block rules
+a consumer has stored against it, where every upload then falls through to `NOT_VERIFIED`
+forever.
 
 `restore_tag` puts a retired tag back, from the Restore button on its row in the admin tag
 table. It revives the *same* row, so it is not a way to release a slug to a different tag —
-the reservation above still holds. Restoring re-checks the `MAX_TAGS` active cap, which
-`validate_tag` only applies on create. Both directions move `packs_version`, so every cached
+the reservation above still holds. Restoring re-checks the active-tag cap (`MAX_TAGS = 100`,
+`tagverify/tags/catalog.py`), which `validate_tag` only applies on create. Both directions move `packs_version`, so every cached
 verdict re-keys and each creative is analysed once more; and a calibration measured before the
 round trip comes back reading superseded, which is `effective_calibrated` doing its job.
 
@@ -268,14 +296,18 @@ migration 0003. They were the rollback path to `main`, and `development` is not 
 `SCORER` no longer accepts `siglip`. The packs themselves — 158 positives and 179 mirrored
 negatives across 24 tags, with the measurements that justified them — are kept in
 `inference/phrase_packs_archive.json`, beside `gate_cache.json`. The API still accepts the four
-fields and ignores them, so DOOH's tag admin keeps working until it drops them too.
+fields and ignores them — by passive omission from `TagPayload` rather than an explicit
+allowlist — so existing catalog clients keep working until they drop them too.
 
 ## Testing
 
 ```bash
 make check              # ruff + the full pytest suite — run this before committing
-make test-fast          # the pure decision rules and intake: no DB, no model, no network
+make test-fast          # intake, aggregate, video, templating, decision_version — no DB, no network
 make typecheck          # mypy, on demand
+make test               # the full suite alone, without the lint pass
+make lint / make fmt    # ruff, checking and rewriting respectively
+make clean              # drop build/, the egg-info and the caches
 ```
 
 `make check` is **lint plus tests only** — `typecheck` is deliberately not folded into it,
@@ -320,6 +352,12 @@ Full reference at `/docs` in the running app — that is a hand-written page; Fa
 | `PATCH` | `/api/v1/tags/{slug}` | `tags:write` |
 | `DELETE` | `/api/v1/tags/{slug}` (retires) | `tags:write` |
 
+That is the whole public JSON API. The same process also serves the playground (`GET /`,
+`GET /ui/catalog`, `POST /ui/analyze` — rate-limited per IP, no key), this reference (`GET /docs`),
+`/static`, and a dozen `/admin/*` handlers behind the admin session. None of those are for
+integrators, and none of them are a second pipeline: `POST /ui/analyze` runs the same
+`analyze/run.py` an API key does.
+
 Keys go in `x-api-key` or `Authorization: Bearer`. The `tags:write` routes accept **either** a
 scoped API key **or** a logged-in admin session with a valid CSRF token, which is what lets the
 admin UI and an integrator share one implementation. A plain analyze key carries no scopes and
@@ -327,7 +365,9 @@ is refused, with an error that names the scope it lacks rather than a bare 403.
 
 There is **no publish endpoint**. A saved tag is live at the next request, so there is nothing to
 publish and nothing to reset. Write handlers still return `"pending_publish": true`, which is now
-a formality kept only because `dooh-backend` parses for it — do not build anything new on it.
+a formality kept only because an existing consumer parses for it — do not build anything new on
+it. The `NOT_CONFIGURED` error code is vestigial for the same reason: its message still describes
+publishing being switched off, and nothing can raise it.
 
 Un-retiring is admin-only. `POST /admin/tags/{slug}/restore` has no `/api/v1` counterpart, by
 design: restoring re-checks the active-tag cap and revives a specific row, which is a decision
@@ -348,6 +388,55 @@ curl -X POST http://localhost:8000/api/v1/analyze \
   -H "x-api-key: dooh_live_..." \
   -F "media=@creative.mp4" -F "tags=alcohol"
 ```
+
+### Three ways to send the media
+
+`tagverify/analyze/intake.py` accepts whichever fits; all three converge on the same frames and
+the same hash. `media` is the current spelling and `image` is accepted everywhere beside it,
+kept working only because existing integrations send it — **the field name never decides how the
+bytes are read.**
+
+```bash
+# 1. multipart — shown above. Field `media` or `image`; failing both, the first file part
+#    is used whatever it is named.
+
+# 2. JSON, inline
+curl -X POST http://localhost:8000/api/v1/analyze \
+  -H "x-api-key: dooh_live_..." -H "content-type: application/json" \
+  -d '{"media_base64": "'"$(base64 < creative.jpg)"'", "tags": ["alcohol"]}'
+
+# 3. JSON, by URL
+curl -X POST http://localhost:8000/api/v1/analyze \
+  -H "x-api-key: dooh_live_..." -H "content-type: application/json" \
+  -d '{"media_url": "https://cdn.example.com/creative.jpg", "tags": ["alcohol"]}'
+```
+
+The URL path is fetched behind an **SSRF guard**: the host is resolved and refused if it lands on
+a private or loopback address, and redirects are **not followed at all** rather than re-validated
+per hop — a redirect is otherwise a way to reach an address that passed the first check.
+
+Limits, enforced on the decoded bytes: **10MB** for a still, **50MB** and **60s** for a video, of
+which at most **6 frames** are scored.
+
+### Errors
+
+Every failure is a JSON body with an `error` code and a message; branch on the code, never the
+message. The ones a caller acts on:
+
+| Code | Status | Means |
+|---|---|---|
+| `INVALID_KEY` | 401 | Unknown **or** revoked — deliberately indistinguishable |
+| `RATE_LIMITED` | 429 | Over the per-minute limit; honour `Retry-After` |
+| `UNKNOWN_TAG` | 400 | A slug was not recognised. **The whole request is refused** — never read as "absent" |
+| `INVALID_IMAGE` / `INVALID_VIDEO` | 400 | The bytes do not decode as either |
+| `IMAGE_TOO_LARGE` / `VIDEO_TOO_LARGE` / `VIDEO_TOO_LONG` | 413 | Over the caps above |
+| `INVALID_IMAGE_URL` | 400 | Unfetchable, or resolves to a private or loopback address |
+| `FORBIDDEN` | 403 | Tag writes need an admin session or a `tags:write` key |
+| `INFERENCE_WARMING` | 503 | The model is waking up — retry after `Retry-After` |
+| `INFERENCE_FAILED` | 502 | The model errored. **Not a verdict** |
+
+`/docs` in the running app carries all 19, generated from the same list the code raises from
+(`tagverify/web/docs.py`), so the two cannot drift.
 
 ```jsonc
 {
@@ -453,12 +542,12 @@ Reaching the router but nothing else is the signature.
 
 ## Things worth knowing before you change anything
 
-**Retire, never delete.** A hard delete strands the slug in DOOH's `devices.blocked_tags` and
-every upload against that screen falls through to `NOT_VERIFIED` forever. Retirement itself is
-reversible — `restore_tag`, and the Restore button on a retired row — because the row and its
-eval images survive it. That is what makes retiring the safe direction. Note the stranding above
-is not unique to deleting: a retired tag leaves `GET /api/v1/tags` too, so DOOH cannot tell the
-two apart. What a hard delete would additionally lose is the slug reservation, and with it the
+**Retire, never delete.** A hard delete strands the slug in whatever block rules a consumer has
+stored against it, and every upload matched by that rule falls through to `NOT_VERIFIED` forever.
+Retirement itself is reversible — `restore_tag`, and the Restore button on a retired row —
+because the row and its eval images survive it. That is what makes retiring the safe direction.
+Note the stranding above is not unique to deleting: a retired tag leaves `GET /api/v1/tags` too,
+so a consumer cannot tell the two apart. What a hard delete would additionally lose is the slug reservation, and with it the
 guarantee that a reused name cannot inherit another tag's labelled images and measurements.
 
 **`decision_version` fingerprints the other half — how the answer is read.** `packs_version`
