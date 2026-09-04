@@ -34,8 +34,8 @@ class Settings(BaseSettings):
     #
     # "siglip" was the third value and is gone: the ranking model, its Space, its prompt pack
     # and the publish step that carried one to the other were removed once a reading model
-    # made all four unnecessary. It is preserved on `main`, and the comparison that justified
-    # the removal is in inference/gate_cache.json.
+    # made all four unnecessary. It is preserved on `siglip-archive`, and the comparison
+    # that justified the removal is in inference/gate_cache.json.
     scorer: str = "vlm"
 
 
