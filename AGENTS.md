@@ -21,10 +21,8 @@ against -- 146 cross-tag false blocks, 0.688 mean recall over 466 images -- so t
 outlived the code. `inference/phrase_packs_archive.json` holds the packs themselves, dumped
 from `content_tags` the moment before migration 0003 dropped the columns: 158 positives and
 179 mirrored negatives across 24 tags, with the four rationales recording what was measured.
-Same principle in both files -- the measurement outlives the code. The model itself is NOT
-in this repository: it is preserved in the original one, `kuljeet-singhh/Dooh-TagVerefication`,
-on `main` at `d33d463`. If that repo is ever deleted, check for a local `siglip-archive` branch
-before assuming it is gone.
+Same principle in both files -- the measurement outlives the code. The model itself is
+preserved on `main`.
 
 ## Rules that are load-bearing
 
