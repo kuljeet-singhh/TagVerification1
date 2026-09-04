@@ -4,7 +4,7 @@
 {% block title %}Playground · Tag Verification{% endblock %}
 
 {% block content %}
-<div class="wrap wrap-wide">
+<div class="wrap wrap-pg">
   <div class="page-head">
     <span class="eyebrow">Playground</span>
     <h1>Does this creative contain what it&rsquo;s tagged with?</h1>
@@ -18,10 +18,17 @@
     </p>
   </div>
 
-  <div class="pg-grid">
-    {# ------------------------------------------------------------ controls #}
+  {# One column of cards, in the order the work happens: creative, tags, verdict.
+     This was a 336px sticky rail beside a wide results panel, which kept the results
+     on screen while you changed a tag — the stack gives that back by scrolling the
+     results card into view on settle (playground.js, htmx:afterSettle). #}
+  <div class="pg-stack">
+
+    {# The form spans cards 1 and 2. The card boundary is presentational; the file
+       input and every tag checkbox stay inside one <form>, so the submission is
+       still a plain multipart POST with no JavaScript assembling it. #}
     <form id="analyze-form"
-          class="card card-pad stack gap-4 pg-controls"
+          class="stack gap-5"
           hx-post="/ui/analyze"
           hx-encoding="multipart/form-data"
           hx-target="#results"
@@ -32,66 +39,98 @@
           hx-disabled-elt="#analyze-btn"
           hx-indicator="#analyze-form">
 
-      <div class="stack gap-2">
-        <span class="step" id="step-creative">
-          <span class="step-n" aria-hidden="true">1</span>
-          <span class="eyebrow">Creative</span>
-        </span>
-
-        <div id="dropzone" class="dropzone" role="button" tabindex="0"
-             aria-label="Choose a creative image or video to analyse">
-          {{ ico.icon('upload', 26) }}
-          <strong>Drop a creative here</strong>
-          <span class="small">image or MP4 &middot; click to choose &middot; you can also paste one</span>
+      {# ---------------------------------------------------------- 1. creative #}
+      <section class="card">
+        <div class="card-head">
+          <span class="step" id="step-creative">
+            <span class="step-n" aria-hidden="true">1</span>
+            <span class="eyebrow">Creative upload</span>
+          </span>
         </div>
 
-        <input type="file" id="creative-input" name="media" class="sr-only"
-               accept="image/*,video/mp4,video/quicktime,video/webm">
-        <div id="preview-slot"></div>
-        <p id="size-note" class="xs subtle"></p>
-      </div>
+        <div class="pg-card-body">
+          <div id="dropzone" class="dropzone" role="button" tabindex="0"
+               aria-label="Choose a creative image or video to analyse">
+            <span class="tile" aria-hidden="true">{{ ico.icon('upload', 20) }}</span>
+            <strong>Drop a creative here</strong>
+            <span class="small">Image or MP4 &middot; click to choose &middot; you can also paste one</span>
+            {# The accepted formats and the size ceiling, stated before the pick rather
+               than as a toast after it. 50MB is MAX_VIDEO_BYTES in playground.js. #}
+            <div class="dz-formats">
+              <span class="pill">JPG</span>
+              <span class="pill">PNG</span>
+              <span class="pill">MP4</span>
+              <span class="xs subtle">Max 50 MB</span>
+            </div>
+          </div>
 
-      <div class="stack gap-2">
-        <div class="row gap-2">
+          <input type="file" id="creative-input" name="media" class="sr-only"
+                 accept="image/*,video/mp4,video/quicktime,video/webm">
+          <div id="preview-slot"></div>
+          <p id="size-note" class="xs subtle"></p>
+        </div>
+      </section>
+
+      {# -------------------------------------------------------------- 2. tags #}
+      <section class="card">
+        <div class="card-head">
           <span class="step" id="step-tags">
             <span class="step-n" aria-hidden="true">2</span>
             <span class="eyebrow">Tags to verify</span>
           </span>
-          <span class="push chip"><span id="tag-count">{{ selected | length }}</span> selected</span>
+          <span class="push xs subtle"><span id="tag-count">{{ selected | length }}</span> selected</span>
+          {# Outside any .tag-group on purpose — that is what makes these two apply to
+             the whole picker rather than to one group; see playground.js. With the
+             filter box they also do the old per-group job: filter, then All. #}
+          <button type="button" class="btn btn-ghost btn-sm" data-select-group="all">All</button>
+          <button type="button" class="btn btn-ghost btn-sm" data-select-group="none">None</button>
         </div>
 
-        <div class="tag-search">
-          {{ ico.icon('search') }}
-          <input class="input" id="tag-search" type="search" placeholder="Filter tags"
-                 aria-label="Filter the tag list" autocomplete="off">
-        </div>
+        <div class="pg-card-body stack gap-3">
+          <div class="tag-search">
+            {{ ico.icon('search') }}
+            <input class="input" id="tag-search" type="search" placeholder="Filter tags"
+                   aria-label="Filter the tag list" autocomplete="off">
+          </div>
 
-        {% include "partials/tag_picker.html" %}
-        <p id="tag-desc" class="tag-desc"></p>
-      </div>
+          {% include "partials/tag_picker.html" %}
+          <p id="tag-desc" class="tag-desc"></p>
 
-      <div class="action-bar">
-        <button class="btn btn-primary btn-lg btn-block" id="analyze-btn" type="submit">
-          <span class="when-idle" id="analyze-label">Analyse</span>
-          <span class="when-busy"><span class="spinner"></span>&nbsp;Analysing…</span>
-        </button>
-        <div class="row gap-2 xs subtle">
-          <span id="elapsed"></span>
-          <button type="button" class="btn btn-ghost btn-sm push" data-copy-link>
-            {{ ico.icon('link', 13) }} Copy link
-          </button>
+          <div class="action-bar">
+            <button class="btn btn-primary btn-lg btn-block" id="analyze-btn" type="submit">
+              <span class="when-idle" id="analyze-label">Analyse</span>
+              <span class="when-busy"><span class="spinner"></span>&nbsp;Analysing…</span>
+            </button>
+            <div class="row gap-2 xs subtle">
+              <span id="elapsed"></span>
+              <button type="button" class="btn btn-ghost btn-sm push" data-copy-link>
+                {{ ico.icon('link', 13) }} Copy link
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
+      </section>
     </form>
 
-    {# ------------------------------------------------------------- results #}
-    <div id="results" aria-live="polite" aria-atomic="false">
-      {% if inference_down %}
-        {% include "partials/inference_down.html" %}
-      {% else %}
-        {% include "partials/results_empty.html" %}
-      {% endif %}
-    </div>
+    {# ----------------------------------------------------------- 3. results #}
+    <section class="card" id="results-card">
+      <div class="card-head">
+        <span class="step">
+          <span class="step-n" aria-hidden="true">3</span>
+          <span class="eyebrow">Verification results</span>
+        </span>
+      </div>
+
+      <div class="pg-card-body">
+        <div id="results" aria-live="polite" aria-atomic="false">
+          {% if inference_down %}
+            {% include "partials/inference_down.html" %}
+          {% else %}
+            {% include "partials/results_empty.html" %}
+          {% endif %}
+        </div>
+      </div>
+    </section>
   </div>
 </div>
 {% endblock %}

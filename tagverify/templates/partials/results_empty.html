@@ -1,9 +1,13 @@
 {% import "_icons.html" as ico %}
+{# Sits inside the results card, so it carries no border of its own — a dashed box
+   inside a bordered card is two frames around one empty thing. #}
 <div class="empty">
-  {{ ico.icon('image', 30) }}
+  <span class="tile" aria-hidden="true">{{ ico.icon('sparkle', 20) }}</span>
+  <strong>Results will appear here</strong>
   <p>
-    Results appear here. Try a creative that <em>nearly</em> matches a tag &mdash; a juice
-    bottle against <code>alcohol</code>, or baby formula against
+    We&rsquo;ll analyse your creative against the selected tags and show the verdict for
+    each one. Try a creative that <em>nearly</em> matches a tag &mdash; a juice bottle
+    against <code>alcohol</code>, or baby formula against
     <code>protein_supplements</code> &mdash; since near-misses are what actually test a
     detector.
   </p>

@@ -362,12 +362,21 @@ if (tagSearch) {
   });
 }
 
+/* All / None. The buttons now live in the card head, OUTSIDE any .tag-group, and
+ * that position is what widens their scope: a button inside a group still selects
+ * only that group, one outside falls through to the whole picker. Same attribute,
+ * same handler, no second control to keep in step.
+ *
+ * The .is-filtered skip is what makes the pair reach a single group anyway —
+ * filter to "vap", press All, and only the visible chips are touched. Selecting
+ * something the user cannot currently see is a silent change to what gets sent. */
 document.body.addEventListener("click", (event) => {
   const button = event.target.closest("[data-select-group]");
   if (!button) return;
-  const group = button.closest(".tag-group");
+  const scope = button.closest(".tag-group") || document.querySelector(".tag-groups");
+  if (!scope) return;
   const on = button.dataset.selectGroup === "all";
-  group.querySelectorAll('input[name="tags"]').forEach((input) => {
+  scope.querySelectorAll('input[name="tags"]').forEach((input) => {
     if (!input.closest(".tag").classList.contains("is-filtered")) input.checked = on;
   });
   refreshSubmit();
@@ -475,6 +484,20 @@ document.body.addEventListener("htmx:afterSettle", () => {
 
   const first = document.querySelector(".verdict");
   if (first) focusTag(first.dataset.tag);
+
+  /* The results card sits BELOW the controls now rather than beside them, so a
+   * verdict can land entirely off-screen. Bring it up.
+   *
+   * Guarded on the card actually holding something: afterSettle is document-wide,
+   * and a swap that yanks the page to an empty box is worse than not scrolling.
+   * `.callout` counts because an error and a "cannot read the catalog" are results
+   * too — they are the answer, and they are the case where the user is most likely
+   * to be staring at an unchanged screen wondering whether the click registered. */
+  const card = document.getElementById("results-card");
+  if (card && card.querySelector(".verdict, .callout")) {
+    const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    card.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+  }
 });
 
 refreshSubmit();

@@ -19,48 +19,75 @@
 
 /* ------------------------------------------------------------- PLAYGROUND */
 
-.pg-grid {
-  display: grid;
-  grid-template-columns: 336px minmax(0, 1fr);
-  gap: var(--s-6);
-  align-items: start;
+/* One column of cards in the order the work happens. This was a 336px sticky
+   control rail beside a wide results panel; the two-column version kept results
+   on screen while you changed a tag, and the stack pays that back by scrolling
+   the results card into view on settle (playground.js, htmx:afterSettle). */
+.pg-stack {
+  display: flex; flex-direction: column; gap: var(--s-5);
   padding-bottom: var(--s-8);
 }
-@media (max-width: 1023px) {
-  .pg-grid { grid-template-columns: minmax(0, 1fr); }
-}
 
-/* The rail is sticky on the left, not the top, so on desktop the controls only
-   need to clear the page padding. */
-.pg-controls { position: sticky; top: var(--s-6); }
-@media (max-width: 1023px) { .pg-controls { position: static; } }
+/* --pad is read back by .action-bar below, which has to bleed to the card edge
+   at both breakpoints. Hard-coding the value there is how that came unstuck the
+   first time. */
+.pg-card-body { --pad: var(--s-5); padding: var(--pad); }
+@media (max-width: 640px) { .pg-card-body { --pad: var(--s-4); } }
+
+/* The card head labels are the step names, so they carry the accent — this is
+   the only place in the app where .eyebrow is not recessive. */
+.pg-stack .card-head .eyebrow { color: var(--accent-text); }
 
 /* Numbered steps. The form is a sequence — creative, then tags, then run — and
    labelling it as one removes the "what do I do first" pause. */
 .step { display: flex; align-items: center; gap: var(--s-2); }
 .step-n {
-  width: 18px; height: 18px; flex: none; border-radius: var(--r-full);
+  width: 20px; height: 20px; flex: none; border-radius: var(--r-full);
   display: grid; place-items: center;
-  background: var(--surface-3); color: var(--fg-subtle);
-  font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums;
+  background: var(--accent-soft); color: var(--accent-text);
+  font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
 }
+/* Filled once the step's precondition is met — playground.js toggles .step-done
+   on #step-creative and #step-tags, so the two things a disabled Analyse button
+   is waiting for are visible in the form and not only in its label. */
 .step-done .step-n { background: var(--accent); color: var(--accent-fg); }
+
+/* A soft square holding one icon. Shared by the dropzone and the empty results
+   state, which is the whole reason it is not called .dz-icon. */
+.tile {
+  width: 44px; height: 44px; flex: none; border-radius: var(--r-lg);
+  display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent-text);
+}
+.tile svg { width: 20px; height: 20px; }
 
 /* --- dropzone --- */
 
 .dropzone {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: var(--s-2); text-align: center;
-  min-height: 156px; padding: var(--s-5);
+  min-height: 168px; padding: var(--s-6) var(--s-5);
   border: 1px dashed var(--border-strong); border-radius: var(--r-lg);
   background: var(--surface-2); color: var(--fg-muted);
   cursor: pointer;
   transition: border-color var(--dur-2), background var(--dur-2);
 }
-.dropzone:hover { border-color: var(--fg-faint); background: var(--surface-3); }
+.dropzone:hover { border-color: var(--accent-line); background: var(--surface-3); }
 .dropzone.is-dragging { border-color: var(--ring); border-style: solid; background: var(--accent-soft); }
-.dropzone svg { width: 22px; height: 22px; color: var(--fg-faint); }
 .dropzone strong { color: var(--fg); font-size: var(--t-body); font-weight: 550; }
+.dropzone .tile { margin-bottom: var(--s-1); }
+
+/* Accepted formats and the ceiling, stated before the pick rather than as a
+   toast after it. The 50MB is MAX_VIDEO_BYTES in playground.js. */
+.dz-formats {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: var(--s-2); margin-top: var(--s-1);
+}
+.pill {
+  padding: 2px 9px; border-radius: var(--r-full);
+  background: var(--surface-3); color: var(--fg-muted);
+  font-size: var(--t-2xs); font-weight: 600; letter-spacing: .03em;
+}
 
 .preview-frame {
   position: relative; border-radius: var(--r-lg); overflow: hidden;
@@ -77,18 +104,10 @@
 }
 .tag-search .input { padding-left: 31px; }
 
-/* The list scrolls, and the cut lands mid-chip about as often as not — a
-   half-height pill reads as an empty box rather than as "there is more below".
-   The mask fades the last few pixels so the clip is legible as a scroll edge. */
-.tag-groups {
-  display: flex; flex-direction: column; gap: var(--s-4);
-  max-height: 44vh; overflow-y: auto; padding-right: var(--s-1);
-  scrollbar-width: thin;
-  mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent 100%);
-}
-@media (max-width: 1023px) {
-  .tag-groups { max-height: none; mask-image: none; }
-}
+/* Full width now, so the whole catalog fits in a few wrapped rows. The old
+   44vh scroll box and its bottom mask fade were both artefacts of living in a
+   336px rail — there is nothing left to clip. */
+.tag-groups { display: flex; flex-direction: column; gap: var(--s-4); }
 
 .tag-group { border: 0; padding: 0; margin: 0; min-width: 0; }
 .tag-group > legend, .tag-group-head {
@@ -100,9 +119,13 @@
   font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint);
 }
 
-/* The "restricted" group is first and marked, because those are the tags where
-   a wrong answer has a regulatory cost rather than a commercial one. */
-.group-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--present-solid); }
+/* Every group gets a dot so the heads read as one shape; only "restricted" gets
+   a colour, because those are the tags where a wrong answer has a regulatory
+   cost rather than a commercial one. The others stay --fg-faint deliberately:
+   amber and green are verdict bands, and a green dot beside a tag claims the
+   creative is clean before anything has been analysed. */
+.group-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--fg-faint); }
+.group-dot.is-restricted { background: var(--present-solid); }
 
 .tag-list { display: flex; flex-wrap: wrap; gap: 5px; }
 
@@ -145,11 +168,14 @@
   display: flex; flex-direction: column; gap: 6px;
   padding-top: var(--s-3); border-top: 1px solid var(--border);
 }
+/* On a narrow screen the tag list is long enough to push Analyse off the
+   bottom, so it sticks. The bleed is written against .pg-card-body's --pad
+   rather than a literal, because that padding changes at 640px. */
 @media (max-width: 1023px) {
   .action-bar {
     position: sticky; bottom: 0; z-index: 30;
-    margin: 0 calc(-1 * var(--s-5)) calc(-1 * var(--s-5));
-    padding: var(--s-3) var(--s-5) calc(var(--s-3) + env(safe-area-inset-bottom));
+    margin: 0 calc(-1 * var(--pad)) calc(-1 * var(--pad));
+    padding: var(--s-3) var(--pad) calc(var(--s-3) + env(safe-area-inset-bottom));
     background: color-mix(in srgb, var(--surface) 92%, transparent);
     backdrop-filter: blur(10px);
     border-top: 1px solid var(--border);
@@ -256,14 +282,15 @@
   font-size: var(--t-2xs); color: var(--fg-faint);
 }
 
+/* Lives inside the results card, so it carries no border of its own — a dashed
+   box inside a bordered card is two frames around one empty thing. */
 .empty {
   display: flex; flex-direction: column; align-items: center; gap: var(--s-2);
-  padding: var(--s-8) var(--s-6); text-align: center;
-  border: 1px dashed var(--border-strong); border-radius: var(--r-lg);
+  padding: var(--s-7) var(--s-6); text-align: center;
   color: var(--fg-subtle); font-size: var(--t-body);
 }
-.empty svg { width: 26px; height: 26px; color: var(--fg-faint); }
-.empty p { max-width: 46ch; }
+.empty strong { color: var(--fg); font-size: var(--t-h3); font-weight: 600; }
+.empty p { max-width: 52ch; }
 .empty code {
   font-family: var(--font-mono); font-size: var(--t-xs);
   background: var(--surface-3); padding: 1px 5px; border-radius: var(--r-xs);
@@ -284,7 +311,13 @@
 .docs-body p { color: var(--fg-muted); margin-bottom: var(--s-3); }
 .docs-body ul { list-style: disc; padding-left: var(--s-5); color: var(--fg-muted); }
 .docs-body li { margin-bottom: var(--s-1); }
-.docs-body code {
+/* Inline code chips in prose. The `:not(pre) >` is load-bearing, not tidiness:
+   the whole page is inside .docs-body, so an unscoped `.docs-body code` also hit
+   the <code> INSIDE every <pre>. Because <pre> keeps newlines, that one inline
+   element fragments into a box PER VISUAL LINE, and each box painted its own
+   light background, border and side padding on top of the dark code surface —
+   a striped, near-unreadable block in light theme. Keep this scoped. */
+.docs-body :not(pre) > code {
   font-family: var(--font-mono); font-size: var(--t-xs); color: var(--fg);
   background: var(--surface-3); padding: 1.5px 5px; border-radius: var(--r-xs);
   border: 1px solid var(--border);
@@ -367,32 +400,139 @@
 
 /* Code blocks keep a dark surface in both themes — inverting them would cost
    the one property that makes them scannable, which is looking like a
-   terminal regardless of the page around them. */
+   terminal regardless of the page around them.
+
+   Consequence worth stating, because it is why the literal hex below is allowed
+   where the rest of this file forbids it: the surface does not follow the theme,
+   so its chrome cannot be written in --surface / --border / --fg either. What it
+   CAN use is the syntax palette in app.css, and it should. */
 .code-block {
-  position: relative; margin: var(--s-2) 0 var(--s-1);
-  border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden;
+  position: relative; margin: var(--s-3) 0 var(--s-2);
+  border: 1px solid var(--code-border); border-radius: var(--r-md);
+  overflow: hidden;
   background: var(--code-bg);
 }
+/* A black rectangle hairlined in light gray reads as pasted onto the page. In
+   light theme the block gets a shadow instead, so it sits ON it; in dark the
+   surfaces are close enough that the border alone does the separating. */
+:root:not([data-theme="dark"]) .code-block { box-shadow: var(--shadow-sm); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .code-block { box-shadow: none; }
+}
+
 .code-bar {
   display: flex; align-items: center; gap: var(--s-2);
-  padding: 6px var(--s-3);
-  background: rgb(255 255 255 / .04); border-bottom: 1px solid rgb(255 255 255 / .07);
-  font-family: var(--font-mono); font-size: var(--t-2xs); color: #9aa2b1;
+  padding: 7px var(--s-3);
+  background: rgb(255 255 255 / .045);
+  border-bottom: 1px solid rgb(255 255 255 / .09);
+  font-family: var(--font-mono); font-size: var(--t-2xs); color: #aab2c0;
 }
+/* The role of the sample — Request, Response — beside the language. Two black
+   boxes stacked under an h3 are otherwise told apart only by reading them. */
+.code-bar .role {
+  padding: 1px 6px; border-radius: var(--r-xs);
+  background: rgb(255 255 255 / .07); color: #8d95a4;
+  letter-spacing: .02em;
+}
+
 .code-block pre {
   overflow-x: auto; padding: var(--s-3) var(--s-4);
   color: var(--code-fg);
-  font-family: var(--font-mono); font-size: var(--t-xs); line-height: 1.7;
+  /* Stays at --t-xs. 13px reads better in isolation, but the longest sample
+     line is 88 mono chars against a 76ch column and the step to 13px pushed the
+     trailing // annotations off the right edge into a scroll — trading a whole
+     comment for a slightly larger glyph. The leading is the part that was
+     genuinely too loose, so that tightens and the size does not. */
+  font-family: var(--font-mono); font-size: var(--t-xs); line-height: 1.6;
   font-variant-ligatures: none;
+
+  /* Right-edge fade, so a line clipped mid-word reads as "there is more" rather
+     than as a rendering fault.
+
+     Not a mask-image, which is the obvious reach for this. A mask is fixed to
+     the box, so on a HORIZONTAL scroller it would keep the last characters faded
+     once you had scrolled to the end — announcing "there is more" at precisely
+     the point where there is not. Fine for a vertical list whose end you rarely
+     reach; wrong here, where the end is two swipes away.
+
+     Two layers instead. The `scroll` shadow is pinned to the visible right edge;
+     the `local` cover scrolls with the content and paints over that shadow once
+     the content's own right edge arrives. So the fade shows only while there is
+     something still to the right, and never when the block already fits.
+     --code-bg is #0b0d11 in both themes, which is why this needs no dark
+     counterpart and why the transparent stops are written out as rgb(11 13 17/0)
+     — `transparent` interpolates through black in some engines and greys the
+     gradient. */
+  background-color: var(--code-bg);
+  background-image:
+    linear-gradient(to left, var(--code-bg), rgb(11 13 17 / 0)),
+    linear-gradient(to left, rgb(11 13 17 / 0), rgb(11 13 17 / .92));
+  background-position: right center;
+  background-repeat: no-repeat;
+  background-size: 32px 100%;
+  background-attachment: local, scroll;
 }
+/* The <code> inside carries no box of its own — see the note on the inline chip
+   rule above for what happens when something gives it one. */
+.code-block pre code {
+  background: none; border: 0; padding: 0;
+  color: inherit; font: inherit;
+}
+/* The horizontal scrollbar. Two things about it are load-bearing:
+
+   1. This element must NOT also set scrollbar-width / scrollbar-color. Since
+      Chrome 121 the standard properties win, and setting either makes these
+      ::-webkit-scrollbar rules be ignored outright. That is what happened here:
+      the block fell back to a macOS OVERLAY scrollbar, which fades out on its
+      own, so a genuinely clipped sample showed no scrollbar at all and read as
+      a broken page. Defining ::-webkit-scrollbar with a height opts out of
+      overlay behaviour and gives a classic bar that keeps its space.
+   2. The colours are not decoration. base.html sets `color-scheme: light dark`
+      so native controls follow the theme — but this surface stays dark in BOTH
+      themes, so in light theme the native treatment would paint a light
+      scrollbar inside a black block. That is the exact light-on-dark defect the
+      meta tag was added to fix. Styling the thumb ourselves overrides it. */
+.code-block pre::-webkit-scrollbar { height: 10px; }
+.code-block pre::-webkit-scrollbar-track { background: transparent; }
+.code-block pre::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / .16); border-radius: var(--r-full);
+  border: 2px solid transparent; background-clip: padding-box;
+}
+.code-block pre::-webkit-scrollbar-thumb:hover { background: rgb(255 255 255 / .28); background-clip: padding-box; }
+/* Firefox has no ::-webkit-scrollbar, so it gets the standard properties — but
+   only where they cost nothing. A browser that wrongly claims support just
+   keeps its own default bar, which is visible and works either way. */
+@supports not selector(::-webkit-scrollbar) {
+  .code-block pre {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(255 255 255 / .22) transparent;
+  }
+}
+
+/* Selecting code used to inherit the page's ::selection, which sets a light
+   background and no colour — over a dark surface that is close to unreadable. */
+.code-block ::selection { background: var(--code-sel); color: #fff; }
+
 .code-block .copy {
   margin-left: auto;
-  padding: 3px 8px; border-radius: var(--r-xs);
-  background: rgb(255 255 255 / .07); color: #c8cdd6;
+  padding: 3px 9px; border-radius: var(--r-xs);
+  background: rgb(255 255 255 / .06); color: #c8cdd6;
+  border: 1px solid rgb(255 255 255 / .12);
   font-family: var(--font-mono); font-size: var(--t-2xs);
-  transition: background var(--dur-1), color var(--dur-1);
+  transition: background var(--dur-1), color var(--dur-1), border-color var(--dur-1);
 }
-.code-block .copy:hover { background: rgb(255 255 255 / .16); color: #fff; }
+.code-block .copy:hover {
+  background: rgb(255 255 255 / .14); color: #fff;
+  border-color: rgb(255 255 255 / .22);
+}
+
+/* Syntax tokens. Applied by static/js/docs.js; absent it, everything stays
+   --code-fg and the block reads exactly as it did before. */
+.tok-key     { color: var(--code-key); }
+.tok-str     { color: var(--code-str); }
+.tok-atom    { color: var(--code-atom); }
+.tok-punct   { color: var(--code-punct); }
+.tok-comment { color: var(--code-comment); font-style: italic; }
 
 /* Segmented control, used for the language tabs and the admin panels. */
 .segmented {
@@ -416,7 +556,10 @@
 }
 .segmented button[aria-selected="true"] .count { background: var(--surface-3); }
 
-.code-tabs { margin-bottom: var(--s-2); }
+/* The tab strip is chrome ON the sample below it, so it does not get its own
+   bottom margin — .code-block's top margin is the whole gap. */
+.code-tabs { margin-bottom: 0; }
+[data-lang-panel] .code-block { margin-top: var(--s-2); }
 
 /* -------------------------------------------------------------------- ADMIN */
 

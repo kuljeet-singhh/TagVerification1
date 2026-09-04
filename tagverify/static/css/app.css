@@ -7,12 +7,19 @@
 
    The one rule that governs the whole palette: COLOUR MEANS A VERDICT.
    Red, amber and green are spoken for — they are the answer the product
-   exists to give. So the interface itself is monochrome: buttons, selected
-   chips and active nav are near-black on light and near-white on dark, and
-   the only chromatic accent in the chrome is a single azure used for links
-   and focus rings. An earlier build tinted buttons, links and the evidence
-   box all in one hue, which put interface furniture in the same visual
-   register as a compliance result. Nothing here competes with a verdict.
+   exists to give — so the chrome is drawn in a hue that can never be
+   mistaken for one. Indigo is that hue: it fills buttons, selected chips,
+   step markers and active nav, and it colours links and focus rings. It
+   never appears on a verdict surface, and no verdict colour ever appears on
+   chrome.
+
+   The chrome was monochrome before this, for a narrower version of the same
+   reason, and the failure it was avoiding is still real: an earlier build
+   tinted buttons, links AND the evidence box in one hue, which put interface
+   furniture in the same register as a compliance result. Note what the fix
+   actually was — it is the evidence box that must not be tinted, not the
+   button. A single chrome hue that stops at the edge of a verdict surface
+   costs nothing and reads as a product rather than as a diff.
 
    Theming: light is the base. Dark is defined twice — once under
    prefers-color-scheme for people who never touch the toggle, and once under
@@ -38,18 +45,24 @@
   --gray-900: #14171d;
   --gray-950: #0b0d11;
 
-  /* Azure. The only chromatic colour in the chrome, and it appears in exactly
-     two roles: link text and focus rings. It is never a fill, never a border
-     on a result, never a background — so it can never be mistaken for an
-     outcome. */
-  --azure-100: #e4edfd;
+  /* Azure survives as one rung, and only for the code surface: it is --code-key
+     below, where the palette is theme-invariant and cool on purpose. It used to
+     be the whole chrome accent — links and focus rings — and the rest of the ramp
+     went with that job. Do not restore it here; the chrome hue is indigo now. */
   --azure-300: #8ab4ff;
-  --azure-500: #2563eb;
-  --azure-600: #1d4ed8;
-  --azure-700: #1a3fae;
+
+  /* Indigo. The chrome hue — fills, links, focus rings, step markers. It is kept
+     clear of every verdict surface, which is the whole reason a chromatic chrome
+     is safe here at all. */
+  --indigo-300: #a5b4fc;
+  --indigo-500: #6366f1;
+  --indigo-600: #4f46e5;
+  --indigo-700: #4338ca;
 
   /* Semantic surfaces. Templates use ONLY these, never the ramps above. */
-  --bg:            var(--gray-50);
+  /* Faintly cool rather than neutral: the cards are pure white, and a plain
+     gray ground makes that read as "unstyled" instead of as a surface. */
+  --bg:            #f6f7fb;
   --surface:       #ffffff;
   --surface-2:     var(--gray-50);
   --surface-3:     var(--gray-100);
@@ -60,22 +73,44 @@
   --fg-subtle:     var(--gray-500);
   --fg-faint:      var(--gray-400);
 
-  /* Interface accent — monochrome. `--accent` is a fill; `--accent-text` is
-     the azure used for links. They are separate tokens because they are
-     separate jobs, and conflating them is how the old palette drifted. */
-  --accent:        var(--gray-900);
-  --accent-hover:  var(--gray-800);
+  /* Interface accent. `--accent` is a fill; `--accent-text` is the same hue at
+     the weight links need. They stay separate tokens even now that both are
+     indigo, because they are separate jobs — dark theme moves them apart
+     again, and conflating them is how the old palette drifted. */
+  --accent:        var(--indigo-600);
+  --accent-hover:  var(--indigo-700);
   --accent-fg:     #ffffff;
-  --accent-text:   var(--azure-600);
-  --accent-soft:   rgb(37 99 235 / .07);
-  --accent-line:   rgb(37 99 235 / .26);
-  --ring:          var(--azure-500);
+  --accent-text:   var(--indigo-600);
+  --accent-soft:   rgb(79 70 229 / .08);
+  --accent-line:   rgb(79 70 229 / .24);
+  --ring:          var(--indigo-500);
 
   /* Code surfaces stay dark in both themes — a code block that inverts
      between themes loses the one thing it is for, which is being scannable
      at a glance as "this is a literal". */
   --code-bg:       var(--gray-950);
   --code-fg:       #d8dbe2;
+  --code-border:   #262b33;
+  --code-sel:      rgb(138 180 255 / .28);
+
+  /* Syntax palette. Declared ONCE, with no dark-theme counterpart, because the
+     surface they sit on is itself theme-invariant — see above.
+
+     Every hue here is cool on purpose. Red, amber and green are spoken for:
+     they are the verdict bands, the only colour in this product that carries
+     meaning. A green string literal three lines above `"present": true` would
+     quietly suggest "absent", which is the exact confusion the service exists
+     to prevent. Recolour these if you like; do not recolour them into a band.
+
+     Numbers share the atom colour deliberately: in a JSON sample, numbers and
+     true/false/null are one category — a scalar that is not a string — and
+     splitting them buys a fifth hue that has to earn its place against the
+     rule above. */
+  --code-key:      var(--azure-300);   /* property names, keywords, commands */
+  --code-str:      #7ed8df;            /* string literals */
+  --code-atom:     #c4a6ff;            /* numbers, true / false / null / None */
+  --code-comment:  #767f8f;            /* the // annotations — recessive */
+  --code-punct:    #6a7280;            /* braces, brackets, commas */
 
   /* Verdict bands. The only colour that carries meaning.
      Text steps are -700/-800 because -600 fails AA on a tint. */
@@ -142,9 +177,10 @@
   color-scheme: light;
 }
 
-/* Dark: the same token contract, inverted. Note the accent flips to near-white
-   — a monochrome interface accent has to invert with the surface or the
-   primary button disappears. */
+/* Dark: the same token contract, inverted. The accent does NOT flip to
+   near-white any more — indigo carries across both surfaces — but --accent-fg
+   is still declared explicitly here, because it used to invert and a leftover
+   near-black on an indigo fill is unreadable. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
@@ -160,13 +196,23 @@
     --fg-subtle:     #868d99;
     --fg-faint:      #656c78;
 
-    --accent:        #f0f2f5;
-    --accent-hover:  #ffffff;
-    --accent-fg:     #0b0d11;
-    --accent-text:   var(--azure-300);
-    --accent-soft:   rgb(138 180 255 / .13);
-    --accent-line:   rgb(138 180 255 / .30);
-    --ring:          #5b8def;
+    /* Indigo does not invert the way the old near-black accent did — it holds
+       its own against a dark surface, so the FILL stays indigo and --accent-fg
+       stays white. Getting that pair wrong is the one change here that makes a
+       primary button's label vanish.
+ 
+       The fill is -600 in BOTH themes, and it is measured rather than picked:
+       white on -500 is 4.47:1, which misses AA for normal text, and .btn-lg is
+       normal text (14.5px/500). White on -600 is 6.29:1, and -600 still clears
+       3:1 against this surface so the button's own edge stays visible. Hover is
+       the token that flips — lighter here, darker in light theme. */
+    --accent:        var(--indigo-600);
+    --accent-hover:  var(--indigo-500);
+    --accent-fg:     #ffffff;
+    --accent-text:   var(--indigo-300);
+    --accent-soft:   rgb(99 102 241 / .16);
+    --accent-line:   rgb(99 102 241 / .34);
+    --ring:          var(--indigo-500);
 
     --code-bg:       #0b0d11;
     --code-fg:       #d8dbe2;
@@ -207,13 +253,14 @@
   --fg-subtle:     #868d99;
   --fg-faint:      #656c78;
 
-  --accent:        #f0f2f5;
-  --accent-hover:  #ffffff;
-  --accent-fg:     #0b0d11;
-  --accent-text:   var(--azure-300);
-  --accent-soft:   rgb(138 180 255 / .13);
-  --accent-line:   rgb(138 180 255 / .30);
-  --ring:          #5b8def;
+  /* Same pairing as the media-query block above — see the note there. */
+  --accent:        var(--indigo-600);
+  --accent-hover:  var(--indigo-500);
+  --accent-fg:     #ffffff;
+  --accent-text:   var(--indigo-300);
+  --accent-soft:   rgb(99 102 241 / .16);
+  --accent-line:   rgb(99 102 241 / .34);
+  --ring:          var(--indigo-500);
 
   --code-bg:       #0b0d11;
   --code-fg:       #d8dbe2;
@@ -304,6 +351,10 @@ ul, ol { margin: 0; padding: 0; }
 .wrap-wide   { max-width: 1360px; }
 .wrap-admin  { max-width: 1100px; }
 .wrap-prose  { max-width: 1120px; }
+/* The playground is one column of cards now, not a rail beside a results panel.
+   1360px was the width of that two-column layout; a single column of chips and
+   verdicts at that width is a line length nobody can scan. */
+.wrap-pg     { max-width: 1040px; }
 
 @media (max-width: 640px) { .wrap { padding-inline: var(--s-4); } }
 
@@ -485,10 +536,15 @@ main { flex: 1; width: 100%; }
 
 /* -------------------------------------------------------------- COMPONENTS */
 
+/* Hairline first, per the note on --shadow-*: the border does the separating
+   and the shadow only has to keep a white card from dissolving into a near-white
+   page. --shadow-xs is a 1px 4%-black hint in light and an inset highlight in
+   dark, so it does that in both themes without becoming elevation. */
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
+  box-shadow: var(--shadow-xs);
 }
 .card-pad { padding: var(--s-5); }
 .card-head {
@@ -579,8 +635,8 @@ main { flex: 1; width: 100%; }
   background: var(--present-bg); border-color: var(--present-line);
   border-left-color: var(--present-solid); color: var(--present-fg);
 }
-/* Neutral, not azure — an informational note is chrome, and tinting it would
-   put it in the same register as a result. */
+/* Neutral, not the accent — an informational note is chrome, and tinting it
+   would put it in the same register as a result. */
 .callout-info {
   background: var(--surface-2); border-color: var(--border);
   border-left-color: var(--fg-faint); color: var(--fg);

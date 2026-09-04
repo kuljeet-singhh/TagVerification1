@@ -5,11 +5,20 @@
 
 {# A code block with a language bar. The bar earns its row: it labels what you
    are looking at and gives the copy button a permanent home, instead of the
-   old hover-reveal button that was invisible on touch. #}
-{% macro code(id, lang, text) %}
-<div class="code-block">
+   old hover-reveal button that was invisible on touch.
+
+   `role` is optional and says whether the sample is the Request or the
+   Response. Two black boxes stacked under one heading are otherwise told apart
+   only by reading them, which is the wrong order of operations.
+
+   `data-code-lang` is what static/js/docs.js reads to pick a grammar. The lang
+   string is the label AND the selector, so keep it to the four docs.js knows:
+   shell, json, python, javascript. An unknown one simply goes unhighlighted. #}
+{% macro code(id, lang, text, role='') %}
+<div class="code-block" data-code-lang="{{ lang }}">
   <div class="code-bar">
     <span>{{ lang }}</span>
+    {% if role %}<span class="role">{{ role }}</span>{% endif %}
     <button class="copy" type="button" data-copy="#{{ id }}">Copy</button>
   </div>
   <pre id="{{ id }}"><code>{{ text }}</code></pre>
@@ -124,20 +133,22 @@
         </dl>
 
         <h3>Examples</h3>
+        {# aria-controls / role="tabpanel" match the admin tabs. Without them a
+           screen reader gets three buttons and no idea what they operate. #}
         <div class="code-tabs segmented" role="tablist" aria-label="Example language">
-          <button role="tab" aria-selected="true"  data-lang="curl">curl</button>
-          <button role="tab" aria-selected="false" data-lang="python">Python</button>
-          <button role="tab" aria-selected="false" data-lang="js">JavaScript</button>
+          <button role="tab" type="button" aria-selected="true"  aria-controls="panel-curl"   data-lang="curl">curl</button>
+          <button role="tab" type="button" aria-selected="false" aria-controls="panel-python" data-lang="python">Python</button>
+          <button role="tab" type="button" aria-selected="false" aria-controls="panel-js"     data-lang="js">JavaScript</button>
         </div>
 
-        <div data-lang-panel="curl">
+        <div id="panel-curl" role="tabpanel" data-lang-panel="curl">
 {{ code('ex-curl', 'shell', 'curl -X POST https://your-app/api/v1/analyze \\
   -H "x-api-key: dooh_live_..." \\
   -F "image=@creative.jpg" \\
-  -F "tags=alcohol" -F "tags=gym_fitness"') }}
+  -F "tags=alcohol" -F "tags=gym_fitness"', role='Request') }}
         </div>
 
-        <div data-lang-panel="python" hidden>
+        <div id="panel-python" role="tabpanel" data-lang-panel="python" hidden>
 {{ code('ex-python', 'python', 'import httpx
 
 with open("creative.jpg", "rb") as fh:
@@ -152,10 +163,10 @@ for verdict in response.json()["results"]:
     if verdict["present"] is None:
         print(f"{verdict[\'tag\']}: needs a human")   # NOT absent
     elif verdict["present"]:
-        print(f"{verdict[\'tag\']}: present")') }}
+        print(f"{verdict[\'tag\']}: present")', role='Request') }}
         </div>
 
-        <div data-lang-panel="js" hidden>
+        <div id="panel-js" role="tabpanel" data-lang-panel="js" hidden>
 {{ code('ex-js', 'javascript', 'const body = new FormData();
 body.append("image", file);
 body.append("tags", "alcohol");
@@ -172,7 +183,7 @@ const { results } = await response.json();
 for (const verdict of results) {
   // null is a third state, not a falsy false.
   if (verdict.present === null) needsReview(verdict.tag);
-}') }}
+}', role='Request') }}
         </div>
 
         <h3>Response</h3>
@@ -198,7 +209,7 @@ for (const verdict of results) {
     }
   }],
   "uncalibrated_tags": ["alcohol"]  // key omitted entirely when empty
-}') }}
+}', role='Response') }}
 
         <h3>Response &mdash; video</h3>
         <p>
@@ -230,7 +241,7 @@ for (const verdict of results) {
     "frames_analyzed": 4,           // frames actually scored
     "frames_considered": 4          // distinct scenes found; higher means partial coverage
   }
-}') }}
+}', role='Response') }}
 
         <h3>Response fields</h3>
         <dl class="fields">
@@ -484,7 +495,7 @@ headers = {"Cookie": f"dooh_admin={cookie}", "X-CSRF-Token": csrf}') }}
         "slug": "pet_supplies",
         "label": "Pet supplies",
         "description": "Pet food, treats, toys, bedding and accessories for domestic pets. Not livestock feed, and not wild animals."
-      }\'') }}
+      }\'', role='Request') }}
 
 {{ code('tags-create-response', 'json', '{
   "slug": "pet_supplies",
@@ -499,7 +510,7 @@ headers = {"Cookie": f"dooh_admin={cookie}", "X-CSRF-Token": csrf}') }}
 
   // A formality: there is no publish step. The tag is live at the next request.
   "pending_publish": true
-}') }}
+}', role='Response') }}
 
         <h3>Update a tag</h3>
         <div class="endpoint">
@@ -552,7 +563,7 @@ headers = {"Cookie": f"dooh_admin={cookie}", "X-CSRF-Token": csrf}') }}
   "count": 24,
   "tags": [{ "slug": "alcohol", "label": "Alcohol", "description": "Beer, wine and spirits...",
              "status": "active", "updated_at": "...", "updated_by": "admin" }]
-}') }}
+}', role='Response') }}
 
         <h3 id="tags-writing">What makes a tag work</h3>
         <p>
@@ -702,6 +713,7 @@ headers = {"Cookie": f"dooh_admin={cookie}", "X-CSRF-Token": csrf}') }}
 {% endblock %}
 
 {% block scripts %}
+<script type="module" src="{{ asset('js/docs.js') }}"></script>
 <script>
 document.querySelectorAll("[data-lang]").forEach((tab) => {
   tab.addEventListener("click", () => {
