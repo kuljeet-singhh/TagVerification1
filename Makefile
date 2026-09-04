@@ -72,7 +72,7 @@ migrate-sql:
 test-fast:
 	$(PY) -m pytest tests/test_intake.py \
 		tests/test_aggregate.py tests/test_video.py tests/test_templating.py \
-		tests/test_decision_version.py
+		tests/test_decision_version.py tests/test_client_ip.py
 
 # inference/ is included even though it is data only now: it costs nothing, and it is the
 # check that would catch a .py file reappearing there. inference/eval/ is excluded in

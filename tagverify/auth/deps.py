@@ -190,9 +190,43 @@ _hits: dict[str, deque[float]] = defaultdict(deque)
 
 
 def client_ip(request: Request) -> str:
-    # X-Forwarded-For is only trustworthy behind a proxy we control; uvicorn populates
-    # request.client from it when run with --proxy-headers.
-    return request.client.host if request.client else "unknown"
+    """
+    The identity a per-IP limit is charged to.
+
+    `request.client` is the socket peer, which is the right answer when this process is
+    reached directly. Behind a reverse proxy it is the PROXY, identically for every caller,
+    and both limits keyed on it stop discriminating: the playground's becomes one bucket for
+    the whole internet, and the admin login lockout inverts into a denial of service --
+    five wrong passwords from any anonymous visitor would lock every admin out.
+
+    TRUST_PROXY_HOPS says how many proxies are in front. Zero -- the default, and what a
+    direct bind and `make serve-lan` want -- keeps the socket peer and ignores the header
+    entirely, because on a LAN any device can forge it. N > 0 takes the Nth entry from the
+    RIGHT of X-Forwarded-For.
+
+    Rightmost, not leftmost, is the entire point. Each proxy APPENDS the address it saw, so
+    the last entry was written by our own edge and is the only one a caller cannot forge;
+    everything to its left is attacker-supplied. uvicorn's --proxy-headers takes the
+    leftmost, which is why that flag alone does not make this safe in front of a proxy whose
+    address we cannot pin with --forwarded-allow-ips.
+    """
+    peer = request.client.host if request.client else "unknown"
+
+    hops = settings().trust_proxy_hops
+    if hops <= 0:
+        return peer
+
+    chain = [part.strip() for part in request.headers.get("x-forwarded-for", "").split(",")]
+    chain = [part for part in chain if part]
+    if not chain:
+        # Configured for a proxy, reached without one. The peer is still the truth here.
+        return peer
+
+    # A chain shorter than the configured hop count means the request did not travel the
+    # path we expect. Take the leftmost we were actually given rather than indexing past
+    # the end -- it is the most trustworthy entry available, and it is still not forgeable
+    # past the proxies that did append.
+    return chain[-min(hops, len(chain))]
 
 
 def playground_rate_limit(request: Request) -> None:

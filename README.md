@@ -29,6 +29,7 @@ there is no second copy anywhere that can fall behind this one.
 - [Testing](#testing)
 - [The API](#the-api)
 - [Serving on a LAN](#serving-on-a-lan)
+- [Deploying](#deploying)
 - [Things worth knowing before you change anything](#things-worth-knowing-before-you-change-anything)
 
 ---
@@ -143,6 +144,13 @@ environment variables, so under `make dev` a key set in `.env` does win.)
 
 ### 3. Create the database
 
+A **new** database is provisioned from the schema file:
+
+```bash
+export $(grep -E '^DATABASE_URL=' .env)   # psql reads the shell, not .env
+psql "$DATABASE_URL" -f docs/schema.sql
+```
+
 An **existing** database is brought forward with Alembic:
 
 ```bash
@@ -150,27 +158,18 @@ make migrate          # alembic upgrade head
 make migrate-sql      # the same, printed as SQL instead of applied — a dry run
 ```
 
+The two are not alternatives. `schema.sql` describes the destination — all seven tables, with
+`CREATE TABLE IF NOT EXISTS` — and the migrations describe how a database that already holds
+data gets there. **A new column belongs in both files**, or provisioning and migrating diverge.
 Alembic reads `DATABASE_URL` through the app's own settings (`migrations/env.py`), so the
 credential never lands in a tracked file.
 
-> **A new database cannot currently be provisioned from this repo.** `docs/schema.sql` used to
-> create one and the `docs/` directory was deleted in `98ae66e`. The migrations are not a
-> substitute: `0001` runs `add_column` against an `api_keys` table that must already exist, and
-> `0002` creates only `pack_header`. Nothing calls `Base.metadata.create_all`. So `alembic
-> upgrade head` against an empty database fails, and there is no second command that would have
-> worked first.
->
-> The surviving description of the destination is `tagverify/db/models.py` — seven tables:
-> `api_keys`, `tag_thresholds`, `analyses`, `eval_images`, `usage_counters`, `content_tags`,
-> `pack_header`. Restoring a provisioning step from those models is an **open job**, not
-> something this README can talk you through.
->
-> Until it is done, **a new column belongs in the models and in a migration**, which is where
-> the old "both files" rule now lands. Several `docs/*` paths are still cited from `Makefile`,
-> `pyproject.toml`, `tagverify/config.py`, `tagverify/api/v1/tags.py`, `tagverify/db/models.py`
-> and `AGENTS.md`; all of them are dead links.
-
-Once the database exists, the rest of this guide works normally.
+The migrations cannot stand in for the schema file: `0001` runs `add_column` against an
+`api_keys` that must already exist, `0002` creates only `pack_header`, and nothing calls
+`Base.metadata.create_all` — so `alembic upgrade head` against an empty database fails. If
+`docs/schema.sql` ever goes missing again it is recoverable with
+`git show 98ae66e^:docs/schema.sql`, and note that `.gitignore` once carried a bare `docs`
+entry that silently swallowed it.
 
 ### 4. Run
 
@@ -207,6 +206,7 @@ Monitoring you cannot reach is not monitoring.
 | `LOG_LEVEL` | no | Defaults to `INFO`. |
 | `PLAYGROUND_RATE_LIMIT_PER_MIN` | no | Defaults to 20. The playground carries no API key by design, so it is limited per IP. |
 | `ADMIN_LOGIN_ATTEMPTS_PER_MIN` | no | Defaults to 5. |
+| `TRUST_PROXY_HOPS` | no | Defaults to 0. How many reverse proxies sit in front. **0 ignores `X-Forwarded-For` entirely** — right for a direct bind and for a LAN, where any device can forge it. Set it to 1 behind a platform that terminates TLS; see [Deploying](#deploying). |
 
 An unrecognised `SCORER` reports *not configured* rather than falling back to a scorer nobody
 asked for — scoring with something other than what was requested is the sort of thing that gets
@@ -303,7 +303,7 @@ allowlist — so existing catalog clients keep working until they drop them too.
 
 ```bash
 make check              # ruff + the full pytest suite — run this before committing
-make test-fast          # intake, aggregate, video, templating, decision_version — no DB, no network
+make test-fast          # intake, aggregate, video, templating, decision_version, client_ip — no DB, no network
 make typecheck          # mypy, on demand
 make test               # the full suite alone, without the lint pass
 make lint / make fmt    # ruff, checking and rewriting respectively
@@ -502,7 +502,9 @@ Two things to know before you do:
 - **Do not add `--proxy-headers` for direct LAN access.** It makes uvicorn trust
   `X-Forwarded-For`, so any device on the network could spoof its IP and walk past the per-IP
   playground rate limit. Use it only behind a real reverse proxy, with `--forwarded-allow-ips`
-  set to that proxy's address — never `*`, which trusts the header from anyone.
+  set to that proxy's address — never `*`, which trusts the header from anyone. Behind a
+  platform whose proxy address you cannot pin, use `TRUST_PROXY_HOPS` instead — see
+  [Deploying](#deploying).
 - **`/admin` is reachable too.** The session cookie is issued without `Secure` over plain HTTP
   (correct — a `Secure` cookie would be silently dropped and login would appear to do nothing),
   which also means the password crosses the network in the clear. Fine on a trusted office LAN;
@@ -539,6 +541,73 @@ A quick check for isolation without any of the above: ping another device on the
 Reaching the router but nothing else is the signature.
 
 </details>
+
+## Deploying
+
+Anything that keeps a process alive works — a VM under systemd, Fly.io, Render, Railway. There
+is **no container and none is needed**: nothing here shells out, and every native dependency
+arrives inside its wheel (`av` carries ffmpeg statically, `psycopg[binary]` carries libpq,
+Pillow is prebuilt). So there are no apt packages and no build tools. The whole install is
+`pip install .` and a `uvicorn` that stays up. Nothing is written to disk, so no volume is
+needed either.
+
+`railway.json` and `.python-version` at the repo root configure a Railway deploy: the Nixpacks
+builder, `pip install .`, and a start command binding `0.0.0.0:$PORT`. Both are inert
+everywhere else. Note the interpreter is pinned to the version the test suite actually runs on,
+not to the `requires-python` floor.
+
+**Provision the database once, by hand**, before the first deploy — `psql -f docs/schema.sql`,
+per [Setup](#3-create-the-database). Do not put it in the start command: DDL on every boot
+turns a rollback into a data-loss event.
+
+### Behind a proxy, set `TRUST_PROXY_HOPS`
+
+Both throttles — the playground's per-IP limit and the admin login lockout — are keyed on
+`client_ip` (`tagverify/auth/deps.py`). Behind a reverse proxy every caller arrives from the
+*proxy's* address, and that does not merely weaken them:
+
+- the playground's 20/min becomes one bucket **for the whole internet**, and
+- the admin lockout **inverts into a denial of service** — `/admin` returns 429 before the
+  password is checked, so five wrong guesses from any anonymous visitor lock every admin out
+  for a minute, renewably.
+
+`--proxy-headers` alone does not fix it. uvicorn takes the **leftmost** `X-Forwarded-For`
+entry, which the caller writes; with `--forwarded-allow-ips '*'` anyone picks their own
+identity. `TRUST_PROXY_HOPS=N` takes the Nth entry from the **right** instead — each proxy
+appends the address it saw, so the last entry is your own edge's observation and the only one a
+caller cannot forge.
+
+Set it to the number of proxies actually in front (`1` on Railway). It defaults to `0`, which
+reads the socket peer and ignores the header entirely, so local development, `make serve-lan`
+and the test suite are unaffected.
+
+### Verifying a deployment
+
+`/api/v1/health` needs no key and **always returns 200**, with the real status in the body — so
+a platform healthcheck that only reads the status code will pass on a deploy that has no
+database and no API key. It is a liveness probe, not a readiness gate. Check the body:
+
+| field | what it tells you |
+|---|---|
+| `inference.scorer` | which scorer and model are in the request path. **If this says `fake`, the deployment is answering from a fixture** — every verdict becomes "needs a human", nothing is ever blocked, and it looks healthy throughout. |
+| `inference.ok` | whether the active scorer is configured. `false` naming a missing API key is the usual first-deploy failure. |
+| `inference.tags` | active tag count, from the same read that builds the prompt. |
+| `decision.rule` | hash of the decision rule this process loaded, at import. Unchanged after deploying a change to `decide.py` means a stale process. |
+
+The endpoint does **not** call the provider — a green check means *configured and readable*, not
+*the provider is up*. That shows as a `502 INFERENCE_FAILED` on the first real analyze.
+
+### Two things to size for
+
+**Video decode runs on the event loop.** `intake.build()` is synchronous and is called directly
+from the async handlers, so a 50MB / 60s clip can hold the loop for seconds and stall
+everything else — including the healthcheck. Give the healthcheck a generous timeout, and
+prefer **one worker with more memory** over several: peak RSS for a single video is plausibly
+several hundred MB once keyframes are held as full-resolution images.
+
+**The rate-limit buckets are per-process** (`auth/deps.py`), so N workers multiply the effective
+limit by N. The authority for API keys is the shared `usage_counters` table, but the
+playground's per-IP limit has no such backstop.
 
 ## Things worth knowing before you change anything
 

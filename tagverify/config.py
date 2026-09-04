@@ -70,6 +70,17 @@ class Settings(BaseSettings):
     playground_rate_limit_per_min: int = 20
     admin_login_attempts_per_min: int = 5
 
+    # How many reverse proxies sit in front of this process. Both limits above are per-IP,
+    # and behind a proxy every caller arrives from the PROXY's address -- so the playground
+    # budget becomes one bucket for the whole internet, and the admin lockout inverts into a
+    # denial of service: five wrong passwords from any visitor would lock every admin out.
+    #
+    # 0 -- the default -- reads the socket peer and ignores X-Forwarded-For entirely, which
+    # is what a direct bind and `make serve-lan` want; on a LAN any device can forge that
+    # header, and the README says so. Set it to 1 on a PaaS that terminates TLS in front.
+    # See client_ip() in tagverify/auth/deps.py for which entry it reads and why.
+    trust_proxy_hops: int = 0
+
     @property
     def scorer_target(self) -> str | None:
         """
