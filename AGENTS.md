@@ -22,7 +22,8 @@ outlived the code. `inference/phrase_packs_archive.json` holds the packs themsel
 from `content_tags` the moment before migration 0003 dropped the columns: 158 positives and
 179 mirrored negatives across 24 tags, with the four rationales recording what was measured.
 Same principle in both files -- the measurement outlives the code. The model itself is
-preserved on `main`.
+preserved in history at commit `d33d463` -- `main` pointed there until it was
+fast-forwarded to `development`.
 
 ## Rules that are load-bearing
 

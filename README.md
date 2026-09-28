@@ -98,7 +98,7 @@ across a tier boundary.
 | `tagverify/analyze/intake.py` | The one intake path: sniffs the media kind from the bytes, enforces the size caps, hashes, and fetches a `media_url` behind an SSRF guard. Every entry point goes through it — the playground used to carry a second partial copy, which is exactly how two entry points drift apart. |
 | `tagverify/analyze/video.py` | Decoding a video and choosing which frames are worth scoring. Keyframes, then a colour-aware dedupe. |
 | `tagverify/analyze/aggregate.py` | The rule that collapses per-frame verdicts into one per tag. Pure — no I/O, no database — so it is tested exhaustively and cheaply. |
-| `inference/` | **Data only — the sole `.py` here is `__init__.py`.** `eval/` holds the labelled images; `gate_cache.json` banks the SigLIP baseline the removal was judged against (146 cross-tag false blocks, 0.688 mean recall over 466 images); `phrase_packs_archive.json` holds the packs themselves, dumped the moment before migration 0003 dropped the columns. `calibration.json`, `sweep.json` and `gate.json` are the runs behind those numbers. The measurement outlives the code. The detector is preserved on `main`. |
+| `inference/` | **Data only — the sole `.py` here is `__init__.py`.** `eval/` holds the labelled images; `gate_cache.json` banks the SigLIP baseline the removal was judged against (146 cross-tag false blocks, 0.688 mean recall over 466 images); `phrase_packs_archive.json` holds the packs themselves, dumped the moment before migration 0003 dropped the columns. `calibration.json`, `sweep.json` and `gate.json` are the runs behind those numbers. The measurement outlives the code. The detector is preserved in history at commit `d33d463`, which `main` pointed at until it was fast-forwarded to `development`. |
 | `migrations/` | Alembic. Brings an **existing** database forward — see [Setup](#3-create-the-database), because it cannot currently create a new one. |
 | `tests/` | pytest. Runs against the ASGI app in-process; tests needing the database or the model skip cleanly when those are not configured. |
 
@@ -292,7 +292,7 @@ verdict re-keys and each creative is analysed once more; and a calibration measu
 round trip comes back reading superseded, which is `effective_calibrated` doing its job.
 
 `positives`, `negatives`, `rationale` and `sigmoid_floor` were dropped from `content_tags` in
-migration 0003. They were the rollback path to `main`, and `development` is not rolling back:
+migration 0003. They were the rollback path to the SigLIP tier (commit `d33d463`), and this code is not rolling back:
 `SCORER` no longer accepts `siglip`. The packs themselves — 158 positives and 179 mirrored
 negatives across 24 tags, with the measurements that justified them — are kept in
 `inference/phrase_packs_archive.json`, beside `gate_cache.json`. The API still accepts the four
@@ -556,8 +556,9 @@ builder, `pip install .`, and a start command binding `0.0.0.0:$PORT`. Both are 
 everywhere else. Note the interpreter is pinned to the version the test suite actually runs on,
 not to the `requires-python` floor.
 
-**Build `development`.** It is the deployable branch; `main` still holds the removed detector
-tier, which expects a Hugging Face Space that no longer exists and would not run.
+**Build `development`.** It is the deployable branch, and `main` now matches it. The removed
+detector tier survives only at commit `d33d463`; it expects a Hugging Face Space that no longer
+exists and would not run.
 
 **Provision the database once, by hand**, before the first deploy — `psql -f docs/schema.sql`,
 per [Setup](#3-create-the-database). Do not put it in the start command: DDL on every boot
