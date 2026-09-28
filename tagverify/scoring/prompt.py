@@ -128,10 +128,17 @@ SCHEMA: dict[str, Any] = {
                                 # docstring: dooh-backend collapses anything that is not a
                                 # literal true/false to null.
                                 "present": {"type": ["boolean", "null"]},
+                                # NO `minimum`/`maximum`. Anthropic's structured outputs
+                                # rejects both on a `number` ("For 'number' type, properties
+                                # maximum, minimum are not supported"), which 400s every
+                                # request -- so the range is carried in the description the
+                                # model reads, and ENFORCED in `vlm._TagAnswer.confidence`
+                                # (`Field(ge=0.0, le=1.0)`), which both providers parse
+                                # through. The boundary check did not move out of the code;
+                                # it moved out of the wire format.
                                 "confidence": {
                                     "type": "number",
-                                    "minimum": 0,
-                                    "maximum": 1,
+                                    "description": "0 to 1 inclusive.",
                                 },
                                 "evidence": {"type": "string"},
                             },
